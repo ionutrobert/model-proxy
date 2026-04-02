@@ -109,6 +109,29 @@ export function createChatRoutes(proxy: ModelProxyCore) {
 
       const request: ChatCompletionRequest = validation.data;
 
+      // Determine selection mode from model name
+      let mode: 'best' | 'fastest' | 'cheapest' | 'coding' | 'reasoning' = 'best';
+      const modelId = request.model || 'auto';
+
+      if (modelId === 'auto-best' || modelId === 'auto') {
+        mode = 'best';
+        request.model = undefined;
+      } else if (modelId === 'auto-fastest') {
+        mode = 'fastest';
+        request.model = undefined;
+      } else if (modelId === 'auto-cheapest') {
+        mode = 'cheapest';
+        request.model = undefined;
+      } else if (modelId === 'auto-coding') {
+        mode = 'coding';
+        request.model = undefined;
+      } else if (modelId === 'auto-reasoning') {
+        mode = 'reasoning';
+        request.model = undefined;
+      }
+
+      console.log(`[REQUEST] Model requested: ${modelId}, Selection mode: ${mode}`);
+
       // Handle streaming
       if (request.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -137,7 +160,8 @@ export function createChatRoutes(proxy: ModelProxyCore) {
               });
               res.write(`data: ${errorData}\n\n`);
               res.end();
-            }
+            },
+            mode
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Streaming failed';
@@ -148,7 +172,7 @@ export function createChatRoutes(proxy: ModelProxyCore) {
       }
 
       // Non-streaming request
-      const response = await proxy.execute(request);
+      const response = await proxy.execute(request, { mode });
       res.json(response);
 
     } catch (error) {
@@ -169,7 +193,7 @@ export function createModelRoutes(proxy: ModelProxyCore) {
   router.get('/', (req: Request, res: Response): void => {
     try {
       const models = proxy.getAvailableModels();
-      
+
       // Add virtual "auto" models for different selection strategies
       const autoModels = [
         {
@@ -180,6 +204,8 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: 'auto',
           parent: null,
+          context_window: 128000,
+          description: 'Automatically selects the best model based on performance and quality',
         },
         {
           id: 'auto-best',
@@ -189,6 +215,8 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: 'auto-best',
           parent: null,
+          context_window: 128000,
+          description: 'Selects the highest quality model available',
         },
         {
           id: 'auto-fastest',
@@ -198,6 +226,8 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: 'auto-fastest',
           parent: null,
+          context_window: 128000,
+          description: 'Selects the fastest responding model',
         },
         {
           id: 'auto-cheapest',
@@ -207,6 +237,19 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: 'auto-cheapest',
           parent: null,
+          context_window: 128000,
+          description: 'Selects the most cost-effective model',
+        },
+        {
+          id: 'auto-coding',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-coding',
+          parent: null,
+          context_window: 128000,
+          description: 'Selects the best model for coding tasks',
         },
       ];
 
@@ -220,6 +263,11 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: model.id,
           parent: null,
+          context_window: model.contextWindow,
+          tier: model.tier,
+          supports_streaming: model.supportsStreaming,
+          supports_function_calling: model.supportsFunctionCalling,
+          supports_vision: model.supportsVision,
         }))],
       });
     } catch (error) {

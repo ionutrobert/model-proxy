@@ -6,21 +6,21 @@
 export * from './types.js';
 
 // Configuration
-export { 
-  ConfigManager, 
-  createProxyConfig, 
+export {
+  ConfigManager,
+  createProxyConfig,
   getConfig,
 } from './config.js';
 
 // Provider Registry
-export { 
-  ProviderRegistry, 
+export {
+  ProviderRegistry,
   PROVIDER_DEFINITIONS,
 } from './provider-registry.js';
 
 // Circuit Breaker
-export { 
-  CircuitBreaker, 
+export {
+  CircuitBreaker,
   circuitBreaker,
   isHealthy,
   isAvailable,
@@ -29,24 +29,40 @@ export {
 } from './circuit-breaker.js';
 
 // Health Service
-export { 
-  HealthService, 
+export {
+  HealthService,
   healthService,
 } from './health-service.js';
 
 // Model Selector
-export { 
-  ModelSelector, 
+export {
+  ModelSelector,
   modelSelector,
 } from './model-selector.js';
+
+// Dynamic Discovery
+export {
+  ModelDiscovery,
+  modelDiscovery,
+} from './model-discovery.js';
+
+export {
+  DynamicHealthService,
+  dynamicHealthService,
+} from './dynamic-health-service.js';
+
+export {
+  SmartModelSelector,
+  smartModelSelector,
+} from './smart-selector.js';
 
 // ============================================================================
 // Main Model Proxy Class
 // ============================================================================
 
-import { 
-  ProxyConfig, 
-  ChatCompletionRequest, 
+import {
+  ProxyConfig,
+  ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
   ModelConfig,
@@ -55,8 +71,8 @@ import {
   ProviderId,
 } from './types.js';
 import { ProviderRegistry } from './provider-registry.js';
-import { healthService } from './health-service.js';
-import { modelSelector } from './model-selector.js';
+import { dynamicHealthService } from './dynamic-health-service.js';
+import { smartModelSelector, SelectionMode } from './smart-selector.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
@@ -65,6 +81,7 @@ export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
   private rankedModels: RankedModel[] = [];
   private healthResults: HealthCheckResult[] = [];
+  private allModels: ModelConfig[] = [];
   private config: ProxyConfig;
 
   constructor(config: ProxyConfig) {
@@ -72,14 +89,9 @@ export class ModelProxyCore {
     this.initialize();
   }
 
-  /**
-   * Initialize the proxy with configured providers
-   */
   private initialize(): void {
-    // Clear existing providers
     this.providers.clear();
 
-    // Create provider instances
     for (const providerConfig of this.config.providers) {
       try {
         const provider = createProvider(providerConfig);
@@ -92,136 +104,117 @@ export class ModelProxyCore {
     console.log(`Initialized ${this.providers.size} provider(s)`);
   }
 
-  /**
-   * Refresh health status of all providers
-   */
   async refreshHealth(): Promise<void> {
-    const models = ProviderRegistry.getAllModels(this.config.providers);
-    
-    this.healthResults = await healthService.checkAllProviders(
+    console.log('\n🔍 Discovering and checking providers...');
+
+    const result = await dynamicHealthService.discoverAndCheckProviders(
       this.config.providers,
-      models
+      15
     );
 
-    this.rankedModels = modelSelector.rankModels(
-      models,
+    this.healthResults = result.healthResults;
+    this.allModels = result.allModels;
+
+    this.rankedModels = smartModelSelector.rankModels(
+      this.allModels,
       this.healthResults,
       this.config.preferences
     );
 
-    console.log(`Health check complete. ${this.rankedModels.length} models available.`);
-    
-    // Log top models
-    for (let i = 0; i < Math.min(5, this.rankedModels.length); i++) {
-      const rm = this.rankedModels[i];
-      console.log(
-        `  ${i + 1}. ${rm.model.name} (${rm.model.provider}) - ` +
-        `Score: ${rm.stabilityScore.toFixed(1)}, Latency: ${rm.health.latency}ms`
-      );
+    console.log(`\n✅ Health check complete.`);
+    console.log(`📊 Available models: ${this.rankedModels.length}`);
+
+    if (this.rankedModels.length > 0) {
+      console.log('\n🏆 Top models:');
+      for (let i = 0; i < Math.min(5, this.rankedModels.length); i++) {
+        const rm = this.rankedModels[i];
+        console.log(
+          `  ${i + 1}. ${rm.model.name} (${rm.model.provider}) - ` +
+          `Tier: ${rm.tier}, Context: ${rm.model.contextWindow.toLocaleString()}, ` +
+          `Latency: ${rm.health.latency}ms`
+        );
+      }
     }
   }
 
-  /**
-   * Execute a chat completion request
-   */
   async execute(
     request: ChatCompletionRequest,
-    options?: { task?: 'simple' | 'complex' | 'critical' }
+    options?: { task?: 'simple' | 'complex' | 'critical'; mode?: SelectionMode }
   ): Promise<ChatCompletionResponse> {
-    // Ensure we have health data
     if (this.rankedModels.length === 0) {
       await this.refreshHealth();
     }
 
-    // Select best model
-    let selected: RankedModel | null = null;
-    const task = options?.task;
-    
-    console.log(`\n🤖 Executing chat completion${task ? ` (task: ${task})` : ''}`);
-    console.log(`📊 Available models: ${this.rankedModels.length}`);
-
-    if (task) {
-      selected = modelSelector.selectModelForTask(
-        task,
-        this.rankedModels,
-        this.config.preferences
-      );
-      console.log(`🎯 Task-based selection (${task}):`);
-    } else {
-      selected = modelSelector.selectBestModel(
-        this.rankedModels,
-        undefined,
-        this.config.preferences
-      );
-      console.log(`🎯 Best model selection:`);
+    if (this.rankedModels.length === 0) {
+      throw new Error('No healthy models available. Check your API keys and network.');
     }
 
-    if (!selected) {
-      throw new Error('No healthy models available');
+    const mode = options?.mode || 'best';
+    console.log(`\n🤖 Executing request (mode: ${mode})`);
+
+    const selectionResult = smartModelSelector.selectForMode(
+      mode,
+      this.rankedModels,
+      this.config.preferences
+    );
+
+    if (!selectionResult) {
+      throw new Error('No suitable model found for request');
     }
 
-    // Log selection details
+    const selected = selectionResult.model;
     console.log(`✅ Selected: ${selected.model.name}`);
-    console.log(`   Provider: ${selected.model.provider}`);
-    console.log(`   Model ID: ${selected.model.id}`);
-    console.log(`   Tier: ${selected.tier}`);
-    console.log(`   Latency: ${selected.health.latency}ms`);
-    console.log(`   Score: ${selected.stabilityScore.toFixed(1)}`);
-    console.log(`   Context: ${selected.model.contextWindow.toLocaleString()} tokens`);
-    if (selected.model.supportsStreaming) {
-      console.log(`   Streaming: ✓`);
-    }
-    if (selected.model.supportsFunctionCalling) {
-      console.log(`   Function calling: ✓`);
+    console.log(`  Provider: ${selected.model.provider}`);
+    console.log(`  Model ID: ${selected.model.id}`);
+    console.log(`  Tier: ${selected.tier}`);
+    console.log(`  Context: ${selected.model.contextWindow.toLocaleString()} tokens`);
+    console.log(`  Latency: ${selected.health.latency}ms`);
+
+    if (selectionResult.alternatives.length > 0) {
+      console.log(`  Alternatives: ${selectionResult.alternatives.map(a => a.model.name).join(', ')}`);
     }
 
-    // Get provider
     const provider = this.providers.get(selected.model.provider);
     if (!provider) {
-      throw new Error(`Provider ${selected.model.provider} not found`);
+      throw new Error(`Provider ${selected.model.provider} not initialized`);
     }
 
-    // Update request with selected model
-    const updatedRequest = {
-      ...request,
-      model: selected.model.id,
-    };
+    const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
+    console.log(`⛓️ Fallback chain: ${fallbackChain.map(m => m.model.name).join(' → ')}`);
 
-    // Execute with fallback
-    const fallbackChain = modelSelector.getFallbackChain(this.rankedModels, 3);
-    if (fallbackChain.length > 1) {
-      console.log(`⛓️ Fallback chain (${fallbackChain.length} models):`);
-      fallbackChain.forEach((m, i) => {
-        console.log(`   ${i + 1}. ${m.model.name} (${m.health.latency}ms)`);
-      });
-    }
-    console.log('');
-
-    return this.executeWithFallback(updatedRequest, fallbackChain);
+    return this.executeWithFallback(
+      { ...request, model: selected.model.id },
+      fallbackChain
+    );
   }
 
-  /**
-   * Execute a streaming chat completion request
-   */
   async executeStreaming(
     request: ChatCompletionRequest,
     onChunk: (chunk: ChatCompletionChunk) => void,
     onComplete?: () => void,
-    onError?: (error: Error) => void
+    onError?: (error: Error) => void,
+    mode?: SelectionMode
   ): Promise<void> {
     if (this.rankedModels.length === 0) {
       await this.refreshHealth();
     }
 
-    // Filter to streaming-capable models
     const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
-    
     if (streamingModels.length === 0) {
       throw new Error('No streaming-capable models available');
     }
 
-    const fallbackChain = modelSelector.getFallbackChain(streamingModels, 3);
-    
+    const selectionResult = smartModelSelector.selectForMode(
+      mode || 'best',
+      streamingModels
+    );
+
+    if (!selectionResult) {
+      throw new Error('No streaming model available');
+    }
+
+    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 3);
+
     for (const rankedModel of fallbackChain) {
       const provider = this.providers.get(rankedModel.model.provider);
       if (!provider) continue;
@@ -233,14 +226,15 @@ export class ModelProxyCore {
           onComplete,
           onError
         );
-        
+
         circuitBreaker.recordSuccess(rankedModel.model.provider);
         return;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-        
-        if (onError) {
+
+        if (onError && fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
           onError(error instanceof Error ? error : new Error(errorMessage));
         }
       }
@@ -249,9 +243,6 @@ export class ModelProxyCore {
     throw new Error('All providers failed for streaming request');
   }
 
-  /**
-   * Execute with fallback chain
-   */
   private async executeWithFallback(
     request: ChatCompletionRequest,
     fallbackChain: RankedModel[]
@@ -263,68 +254,63 @@ export class ModelProxyCore {
       if (!provider) continue;
 
       try {
+        console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
         const response = await provider.execute({
           ...request,
           model: rankedModel.model.id,
         });
-        
-        // Record success
+
         circuitBreaker.recordSuccess(rankedModel.model.provider);
+        console.log(`✓ Success with ${rankedModel.model.name}`);
         return response;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         errors.push(`${rankedModel.model.name}: ${errorMessage}`);
-        
-        // Record failure
+        console.error(`✗ ${rankedModel.model.name} failed: ${errorMessage}`);
+
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
       }
     }
 
-    throw new Error(`All providers failed: ${errors.join('; ')}`);
+    throw new Error(`All providers failed:\n${errors.map((e, i) => `  ${i + 1}. ${e}`).join('\n')}`);
   }
 
-  /**
-   * Get all available models
-   */
   getAvailableModels(): ModelConfig[] {
-    return this.rankedModels.map(r => r.model);
+    return this.allModels;
   }
 
-  /**
-   * Get health status
-   */
+  getRankedModels(): RankedModel[] {
+    return this.rankedModels;
+  }
+
   getHealthStatus(): {
     models: RankedModel[];
     providers: import('./types.js').ProviderHealth[];
-    summary: ReturnType<import('./health-service.js').HealthService['getHealthSummary']>;
+    summary: { total: number; healthy: number; unhealthy: number };
   } {
+    const healthy = this.healthResults.filter(r => r.status === 'healthy').length;
     return {
       models: this.rankedModels,
       providers: circuitBreaker.getHealthStatus(),
-      summary: healthService.getHealthSummary.bind(healthService)(this.healthResults),
+      summary: {
+        total: this.healthResults.length,
+        healthy,
+        unhealthy: this.healthResults.length - healthy,
+      },
     };
   }
 
-  /**
-   * Get configuration
-   */
   getConfig(): ProxyConfig {
     return this.config;
   }
 
-  /**
-   * Update configuration
-   */
   updateConfig(config: Partial<ProxyConfig>): void {
     this.config = { ...this.config, ...config };
     this.initialize();
   }
 
-  /**
-   * Force refresh health
-   */
   async forceHealthRefresh(): Promise<void> {
-    healthService.invalidateCache();
+    dynamicHealthService.invalidateCache();
     await this.refreshHealth();
   }
 }
@@ -351,7 +337,7 @@ export function createModelProxy(
   }
 ): ModelProxyCore {
   const config = createProxyConfig(options.providers, options.preferences);
-  
+
   if (options.healthCheck) {
     config.healthCheck = {
       ...config.healthCheck,
