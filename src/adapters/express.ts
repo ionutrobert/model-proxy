@@ -167,9 +167,49 @@ export function createModelRoutes(proxy: ModelProxyCore) {
     try {
       const models = proxy.getAvailableModels();
       
+      // Add virtual "auto" models for different selection strategies
+      const autoModels = [
+        {
+          id: 'auto',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto',
+          parent: null,
+        },
+        {
+          id: 'auto-best',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-best',
+          parent: null,
+        },
+        {
+          id: 'auto-fastest',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-fastest',
+          parent: null,
+        },
+        {
+          id: 'auto-cheapest',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-cheapest',
+          parent: null,
+        },
+      ];
+
       res.json({
         object: 'list',
-        data: models.map(model => ({
+        data: [...autoModels, ...models.map(model => ({
           id: model.id,
           object: 'model',
           created: Math.floor(Date.now() / 1000),
@@ -177,7 +217,7 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           permission: [],
           root: model.id,
           parent: null,
-        })),
+        }))],
       });
     } catch (error) {
       handleError(error, res);
