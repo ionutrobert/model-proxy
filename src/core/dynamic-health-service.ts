@@ -24,7 +24,7 @@ export class DynamicHealthService {
 
   async discoverAndCheckProviders(
     providers: ProviderConfig[],
-    maxModelsPerProvider: number = 10
+    maxModelsPerProvider: number = 30
   ): Promise<{ healthResults: HealthCheckResult[]; allModels: ModelConfig[] }> {
     const allModels: ModelConfig[] = [];
     const healthResults: HealthCheckResult[] = [];
@@ -42,11 +42,15 @@ export class DynamicHealthService {
           const fallbackModels = await this.getFallbackModels(provider);
           const modelsToCheck = fallbackModels.slice(0, maxModelsPerProvider);
 
-          for (const model of modelsToCheck) {
-            const result = await this.checkModelHealth(provider, model);
-            healthResults.push(result);
-            if (result.status === 'healthy') {
-              allModels.push(model);
+          const checks = modelsToCheck.map(model => this.checkModelHealth(provider, model));
+          const results = await Promise.allSettled(checks);
+          
+          for (const result of results) {
+            if (result.status === 'fulfilled') {
+              healthResults.push(result.value);
+              if (result.value.status === 'healthy') {
+                allModels.push(modelsToCheck[results.indexOf(result)]);
+              }
             }
           }
         } else {
@@ -57,13 +61,20 @@ export class DynamicHealthService {
 
           this.modelCache.set(provider.id, modelConfigs);
 
-          const modelsToCheck = modelConfigs.slice(0, maxModelsPerProvider);
+          const prioritizedModels = this.prioritizeModelsForCheck(modelConfigs);
+          const modelsToCheck = prioritizedModels.slice(0, maxModelsPerProvider);
 
-          for (const model of modelsToCheck) {
-            const result = await this.checkModelHealth(provider, model);
-            healthResults.push(result);
-            if (result.status === 'healthy') {
-              allModels.push(model);
+          console.log(`[HEALTH] ${provider.name}: Checking ${modelsToCheck.length} prioritized models`);
+          const checks = modelsToCheck.map(model => this.checkModelHealth(provider, model));
+          const results = await Promise.allSettled(checks);
+
+          for (let i = 0; i < results.length; i++) {
+            const result = results[i];
+            if (result.status === 'fulfilled') {
+              healthResults.push(result.value);
+              if (result.value.status === 'healthy') {
+                allModels.push(modelsToCheck[i]);
+              }
             }
           }
         }
@@ -72,11 +83,15 @@ export class DynamicHealthService {
         const fallbackModels = await this.getFallbackModels(provider);
         const modelsToCheck = fallbackModels.slice(0, maxModelsPerProvider);
 
-        for (const model of modelsToCheck) {
-          const result = await this.checkModelHealth(provider, model);
-          healthResults.push(result);
-          if (result.status === 'healthy') {
-            allModels.push(model);
+        const checks = modelsToCheck.map(model => this.checkModelHealth(provider, model));
+        const results = await Promise.allSettled(checks);
+        
+        for (const result of results) {
+          if (result.status === 'fulfilled') {
+            healthResults.push(result.value);
+            if (result.value.status === 'healthy') {
+              allModels.push(modelsToCheck[results.indexOf(result)]);
+            }
           }
         }
       }
@@ -117,6 +132,29 @@ export class DynamicHealthService {
       }
 
       return model;
+    });
+  }
+
+  private prioritizeModelsForCheck(models: ModelConfig[]): ModelConfig[] {
+    const priorityOrder = [
+      'kimi-k2.5', 'kimi-k2', 'glm5', 'glm4',
+      'deepseek-v3', 'deepseek-r1',
+      'llama-3.1-405b', 'llama-3.1-70b', 'llama-3.3-70b',
+      'mistral-large', 'mistral-medium',
+      'qwen3', 'qwen2.5',
+      'nemotron-ultra', 'nemotron-70b',
+    ];
+
+    return models.sort((a, b) => {
+      const aPriority = priorityOrder.findIndex(p => a.id.toLowerCase().includes(p));
+      const bPriority = priorityOrder.findIndex(p => b.id.toLowerCase().includes(p));
+
+      if (aPriority !== -1 && bPriority !== -1) return aPriority - bPriority;
+      if (aPriority !== -1) return -1;
+      if (bPriority !== -1) return 1;
+
+      const tierOrder = { 'S+': 0, 'S': 1, 'A+': 2, 'A': 3, 'A-': 4, 'B+': 5, 'B': 6, 'C': 7 };
+      return tierOrder[a.tier] - tierOrder[b.tier];
     });
   }
 
