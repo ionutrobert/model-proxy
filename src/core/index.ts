@@ -129,7 +129,7 @@ export class ModelProxyCore {
       for (let i = 0; i < Math.min(5, this.rankedModels.length); i++) {
         const rm = this.rankedModels[i];
         console.log(
-          `  ${i + 1}. ${rm.model.name} (${rm.model.provider}) - ` +
+          ` ${i + 1}. ${rm.model.name} (${rm.model.provider}) - ` +
           `Tier: ${rm.tier}, Context: ${rm.model.contextWindow.toLocaleString()}, ` +
           `Latency: ${rm.health.latency}ms`
         );
@@ -139,7 +139,7 @@ export class ModelProxyCore {
 
   async execute(
     request: ChatCompletionRequest,
-    options?: { task?: 'simple' | 'complex' | 'critical'; mode?: SelectionMode }
+    options?: { task?: 'simple' | 'complex' | 'critical'; mode?: SelectionMode; useAutoSelection?: boolean }
   ): Promise<ChatCompletionResponse> {
     if (this.rankedModels.length === 0) {
       await this.refreshHealth();
@@ -147,6 +147,25 @@ export class ModelProxyCore {
 
     if (this.rankedModels.length === 0) {
       throw new Error('No healthy models available. Check your API keys and network.');
+    }
+
+    // Direct model execution when specific model is requested
+    const useAutoSelection = options?.useAutoSelection !== false;
+    if (!useAutoSelection && request.model) {
+      const modelId = request.model;
+      console.log(`\n🎯 Direct execution for model: ${modelId}`);
+
+      const modelConfig = this.allModels.find(m => m.id === modelId);
+      if (!modelConfig) {
+        throw new Error(`Model ${modelId} not found in available models`);
+      }
+
+      const provider = this.providers.get(modelConfig.provider);
+      if (!provider) {
+        throw new Error(`Provider ${modelConfig.provider} not initialized`);
+      }
+
+      return provider.execute({ ...request, model: modelId });
     }
 
     const mode = options?.mode || 'best';
@@ -164,14 +183,14 @@ export class ModelProxyCore {
 
     const selected = selectionResult.model;
     console.log(`✅ Selected: ${selected.model.name}`);
-    console.log(`  Provider: ${selected.model.provider}`);
-    console.log(`  Model ID: ${selected.model.id}`);
-    console.log(`  Tier: ${selected.tier}`);
-    console.log(`  Context: ${selected.model.contextWindow.toLocaleString()} tokens`);
-    console.log(`  Latency: ${selected.health.latency}ms`);
+    console.log(` Provider: ${selected.model.provider}`);
+    console.log(` Model ID: ${selected.model.id}`);
+    console.log(` Tier: ${selected.tier}`);
+    console.log(` Context: ${selected.model.contextWindow.toLocaleString()} tokens`);
+    console.log(` Latency: ${selected.health.latency}ms`);
 
     if (selectionResult.alternatives.length > 0) {
-      console.log(`  Alternatives: ${selectionResult.alternatives.map(a => a.model.name).join(', ')}`);
+      console.log(` Alternatives: ${selectionResult.alternatives.map(a => a.model.name).join(', ')}`);
     }
 
     const provider = this.providers.get(selected.model.provider);
@@ -272,7 +291,7 @@ export class ModelProxyCore {
       }
     }
 
-    throw new Error(`All providers failed:\n${errors.map((e, i) => `  ${i + 1}. ${e}`).join('\n')}`);
+    throw new Error(`All providers failed:\n${errors.map((e, i) => ` ${i + 1}. ${e}`).join('\n')}`);
   }
 
   getAvailableModels(): ModelConfig[] {
@@ -283,11 +302,7 @@ export class ModelProxyCore {
     return this.rankedModels;
   }
 
-  getHealthStatus(): {
-    models: RankedModel[];
-    providers: import('./types.js').ProviderHealth[];
-    summary: { total: number; healthy: number; unhealthy: number };
-  } {
+  getHealthStatus(): { models: RankedModel[]; providers: import('./types.js').ProviderHealth[]; summary: { total: number; healthy: number; unhealthy: number }; } {
     const healthy = this.healthResults.filter(r => r.status === 'healthy').length;
     return {
       models: this.rankedModels,

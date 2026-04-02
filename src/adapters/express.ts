@@ -107,30 +107,34 @@ export function createChatRoutes(proxy: ModelProxyCore) {
         return;
       }
 
-      const request: ChatCompletionRequest = validation.data;
+    const request: ChatCompletionRequest = validation.data;
 
-      // Determine selection mode from model name
-      let mode: 'best' | 'fastest' | 'cheapest' | 'coding' | 'reasoning' = 'best';
-      const modelId = request.model || 'auto';
+    // Determine selection mode from model name
+    let mode: 'best' | 'fastest' | 'cheapest' | 'coding' | 'reasoning' = 'best';
+    let useAutoSelection = true;
+    const modelId = request.model || 'auto';
 
-      if (modelId === 'auto-best' || modelId === 'auto') {
-        mode = 'best';
-        request.model = undefined;
-      } else if (modelId === 'auto-fastest') {
-        mode = 'fastest';
-        request.model = undefined;
-      } else if (modelId === 'auto-cheapest') {
-        mode = 'cheapest';
-        request.model = undefined;
-      } else if (modelId === 'auto-coding') {
-        mode = 'coding';
-        request.model = undefined;
-      } else if (modelId === 'auto-reasoning') {
-        mode = 'reasoning';
-        request.model = undefined;
-      }
+    if (modelId === 'auto-best' || modelId === 'auto') {
+      mode = 'best';
+      request.model = undefined;
+    } else if (modelId === 'auto-fastest') {
+      mode = 'fastest';
+      request.model = undefined;
+    } else if (modelId === 'auto-cheapest') {
+      mode = 'cheapest';
+      request.model = undefined;
+    } else if (modelId === 'auto-coding') {
+      mode = 'coding';
+      request.model = undefined;
+    } else if (modelId === 'auto-reasoning') {
+      mode = 'reasoning';
+      request.model = undefined;
+    } else {
+      // Specific model requested - use direct execution
+      useAutoSelection = false;
+    }
 
-      console.log(`[REQUEST] Model requested: ${modelId}, Selection mode: ${mode}`);
+    console.log(`[REQUEST] Model requested: ${modelId}, Auto selection: ${useAutoSelection}`);
 
       // Handle streaming
       if (request.stream) {
@@ -171,9 +175,9 @@ export function createChatRoutes(proxy: ModelProxyCore) {
         return;
       }
 
-      // Non-streaming request
-      const response = await proxy.execute(request, { mode });
-      res.json(response);
+    // Non-streaming request
+    const response = await proxy.execute(request, { mode, useAutoSelection });
+    res.json(response);
 
     } catch (error) {
       handleError(error, res);
