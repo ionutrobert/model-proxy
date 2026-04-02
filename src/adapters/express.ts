@@ -43,14 +43,15 @@ const chatCompletionRequestSchema = z.object({
 export function createAuthMiddleware(proxyApiKey: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Skip auth for health check endpoint
-    if (req.path === '/health') {
+    if (req.path === '/health' || req.path === '/health/simple') {
       next();
       return;
     }
 
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log(`[AUTH] Missing authorization header for ${req.method} ${req.path}`);
       res.status(401).json({
         error: {
           message: 'Missing or invalid authorization header',
@@ -64,6 +65,7 @@ export function createAuthMiddleware(proxyApiKey: string) {
     const apiKey = authHeader.slice(7);
 
     if (apiKey !== proxyApiKey) {
+      console.log(`[AUTH] Invalid API key for ${req.method} ${req.path} (key: ${apiKey.substring(0, 8)}...)`);
       res.status(401).json({
         error: {
           message: 'Invalid API key',
@@ -74,6 +76,7 @@ export function createAuthMiddleware(proxyApiKey: string) {
       return;
     }
 
+    console.log(`[AUTH] ✓ Authenticated for ${req.method} ${req.path}`);
     next();
   };
 }
