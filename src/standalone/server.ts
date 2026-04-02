@@ -7,6 +7,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import * as crypto from 'crypto';
 import { ConfigManager, getConfig } from '../core/config.js';
 import { ModelProxyCore } from '../core/index.js';
 import { createExpressRoutes } from '../adapters/express.js';
@@ -14,6 +15,26 @@ import { createLoggingMiddleware, createErrorMiddleware } from './middleware.js'
 
 // Load environment variables
 dotenv.config();
+
+// ============================================================================
+// Auto-generate MODEL_PROXY_API_KEY if not set
+// ============================================================================
+if (!process.env.MODEL_PROXY_API_KEY) {
+  const generatedKey = crypto.randomBytes(32).toString('hex');
+  process.env.MODEL_PROXY_API_KEY = generatedKey;
+  
+  console.log('');
+  console.log('⚠️  ═══════════════════════════════════════════════════════');
+  console.log('⚠️  MODEL_PROXY_API_KEY not set in environment');
+  console.log('⚠️  Generated temporary key for this session:');
+  console.log('⚠️');
+  console.log(`⚠️  ${generatedKey}`);
+  console.log('⚠️');
+  console.log('⚠️  Save this key for future use!');
+  console.log('⚠️  Set it in your environment: MODEL_PROXY_API_KEY=<key>');
+  console.log('⚠️  ═══════════════════════════════════════════════════════');
+  console.log('');
+}
 
 // ============================================================================
 // Server Setup
@@ -115,14 +136,7 @@ async function initializeProxy(): Promise<ModelProxyCore> {
 async function startServer() {
   try {
     const proxy = await initializeProxy();
-    const proxyApiKey = process.env.MODEL_PROXY_API_KEY;
-
-    if (!proxyApiKey) {
-      throw new Error(
-        'MODEL_PROXY_API_KEY not set. Please generate a secure API key ' +
-        'and set it in your .env file.'
-      );
-    }
+    const proxyApiKey = process.env.MODEL_PROXY_API_KEY!;
 
     // Mount proxy routes
     app.use('/', createExpressRoutes(proxy, proxyApiKey));
