@@ -8,6 +8,7 @@ import {
   defaultPreferences,
 } from './types.js';
 import { circuitBreaker } from './circuit-breaker.js';
+import { CURATED_MODELS, supportsToolCalling, getCuratedModel } from './curated-models.js';
 
 const TIER_WEIGHTS: Record<ModelTier, number> = {
   'S+': 100,
@@ -78,25 +79,38 @@ export class SmartModelSelector {
 
     const ranked = healthyModels.map(model => {
       const health = healthByModel.get(model.id)!;
-      const tierWeight = TIER_WEIGHTS[model.tier];
+      
+      // Use curated model info if available
+      const curated = getCuratedModel(model.id);
+      const tierWeight = TIER_WEIGHTS[curated?.tier || model.tier];
 
       const maxLatency = preferences.maxLatencyMs;
       const latencyScore = Math.max(0, 30 * (1 - health.latency / maxLatency));
 
-      const contextScore = Math.min(20, (model.contextWindow / 128000) * 20);
+      const contextWindow = curated?.contextWindow || model.contextWindow;
+      const contextScore = Math.min(20, (contextWindow / 128000) * 20);
 
+      const supportsFnCalling = curated?.supportsFunctionCalling ?? model.supportsFunctionCalling ?? false;
+      const supportsVis = curated?.supportsVision ?? model.supportsVision ?? false;
+      
       const capabilityScore =
         (model.supportsStreaming ? 5 : 0) +
-        (model.supportsFunctionCalling ? 10 : 0) +
-        (model.supportsVision ? 5 : 0);
+        (supportsFnCalling ? 10 : 0) +
+        (supportsVis ? 5 : 0);
 
-      const stabilityScore = tierWeight + latencyScore + contextScore + capabilityScore;
+      // Boost score for curated models
+      const curatedBoost = curated ? 15 : 0;
+      
+      // Boost score for models known to work with tools
+      const toolBoost = supportsToolCalling(model.id) ? 10 : 0;
+
+      const stabilityScore = tierWeight + latencyScore + contextScore + capabilityScore + curatedBoost + toolBoost;
 
       return {
         model,
         health,
         stabilityScore,
-        tier: model.tier,
+        tier: curated?.tier || model.tier,
         providerPreference: 0,
       };
     });
@@ -116,7 +130,13 @@ export class SmartModelSelector {
 
     switch (mode) {
       case 'best':
-        candidates = this.filterBestForCoding(candidates);
+        // Prefer models that work well with tools
+        candidates = candidates.sort((a, b) => {
+          const aToolCapable = supportsToolCalling(a.model.id) ? 1 : 0;
+          const bToolCapable = supportsToolCalling(b.model.id) ? 1 : 0;
+          if (aToolCapable !== bToolCapable) return bToolCapable - aToolCapable;
+          return b.stabilityScore - a.stabilityScore;
+        });
         break;
 
       case 'fastest':
@@ -136,11 +156,22 @@ export class SmartModelSelector {
         break;
 
       case 'coding':
-        candidates = this.filterBestForCoding(candidates);
-        candidates = candidates.filter(r =>
-          r.model.contextWindow >= 32000 &&
-          (r.model.supportsFunctionCalling || r.tier === 'S+' || r.tier === 'S')
-        );
+        // For coding, prioritize models known to work with tools
+        candidates = candidates.sort((a, b) => {
+          const aToolCapable = supportsToolCalling(a.model.id) ? 1 : 0;
+          const bToolCapable = supportsToolCalling(b.model.id) ? 1 : 0;
+          if (aToolCapable !== bToolCapable) return bToolCapable - aToolCapable;
+          
+          const aCurated = getCuratedModel(a.model.id);
+          const bCurated = getCuratedModel(b.model.id);
+          const aSweScore = aCurated?.swe_score || 0;
+          const bSweScore = bCurated?.swe_score || 0;
+          if (aSweScore !== bSweScore) return bSweScore - aSweScore;
+          
+          return b.stabilityScore - a.stabilityScore;
+        });
+        // Filter for models with good context window
+        candidates = candidates.filter(r => r.model.contextWindow >= 32000);
         break;
 
       case 'reasoning':
