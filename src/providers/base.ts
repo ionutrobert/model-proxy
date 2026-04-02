@@ -99,11 +99,18 @@ export abstract class BaseProvider {
     const mappedChoices = choicesData.map((choice: unknown, index: number) => {
       const choiceObj = choice as Record<string, unknown>;
       const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
+      
+      // Some models (like Kimi) return content in 'reasoning' field when it's null
+      let content = messageObj.content;
+      if (content === null || content === undefined) {
+        content = messageObj.reasoning || '';
+      }
+      
       return {
         index,
         message: {
           role: 'assistant' as const,
-          content: String(messageObj.content || ''),
+          content: String(content),
         },
         finish_reason: (choiceObj.finish_reason as string) || 'stop',
         logprobs: choiceObj.logprobs,
