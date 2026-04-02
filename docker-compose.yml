@@ -7,8 +7,6 @@ services:
       dockerfile: Dockerfile
     container_name: model-proxy
     restart: unless-stopped
-    ports:
-      - "${PORT:-3000}:3000"
     environment:
       # Server
       - NODE_ENV=production
