@@ -137,12 +137,14 @@ export class DynamicHealthService {
 
   private prioritizeModelsForCheck(models: ModelConfig[]): ModelConfig[] {
     const priorityOrder = [
-      'kimi-k2.5', 'kimi-k2', 'glm5', 'glm4',
-      'deepseek-v3', 'deepseek-r1',
-      'llama-3.1-405b', 'llama-3.1-70b', 'llama-3.3-70b',
+      'kimi-k2.5', 'kimi-k2', 'moonshotai/kimi',
+      'glm5', 'glm-5', 'glm4', 'thudm/',
+      'deepseek-v3', 'deepseek-r1', 'deepseek-ai/',
+      'llama-3.1-405b', 'llama-3.3-70b', 'meta/llama-3.1-70b',
+      'nemotron-ultra', 'nemotron-70b', 'nvidia/llama-3.1-nemotron',
       'mistral-large', 'mistral-medium',
       'qwen3', 'qwen2.5',
-      'nemotron-ultra', 'nemotron-70b',
+      'llama-3.1-70b', 'llama-3.1-8b',
     ];
 
     return models.sort((a, b) => {

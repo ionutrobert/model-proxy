@@ -170,6 +170,7 @@ export class ModelDiscovery {
   inferContextWindow(modelId: string): number {
     const id = modelId.toLowerCase();
 
+    // Explicit context markers
     if (id.includes('128k') || id.includes('128000')) return 128000;
     if (id.includes('200k') || id.includes('200000')) return 200000;
     if (id.includes('100k') || id.includes('100000')) return 100000;
@@ -179,7 +180,10 @@ export class ModelDiscovery {
     if (id.includes('8k') || id.includes('8192')) return 8192;
     if (id.includes('4k') || id.includes('4096')) return 4096;
 
-    if (id.includes('llama-3.1') || id.includes('llama3.1')) return 128000;
+    // Premium models with large context
+    if (id.includes('kimi-k2') || id.includes('glm5') || id.includes('glm-5')) return 128000;
+    if (id.includes('deepseek-v3') || id.includes('deepseek-r1')) return 128000;
+    if (id.includes('llama-3.1') || id.includes('llama3.1') || id.includes('llama-3.3')) return 128000;
     if (id.includes('llama-3') || id.includes('llama3')) return 8192;
     if (id.includes('gpt-4') || id.includes('gpt4')) {
       if (id.includes('turbo') || id.includes('1106') || id.includes('0125')) return 128000;
@@ -191,6 +195,8 @@ export class ModelDiscovery {
     if (id.includes('mistral-large') || id.includes('mixtral-8x22')) return 65536;
     if (id.includes('mixtral') || id.includes('mistral')) return 32768;
     if (id.includes('gemini')) return 32000;
+    if (id.includes('qwen3') || id.includes('qwen2.5') || id.includes('qwen-2.5')) return 32768;
+    if (id.includes('nemotron')) return 128000;
 
     return 8192;
   }
@@ -214,15 +220,20 @@ export class ModelDiscovery {
   estimateTier(modelId: string): 'S+' | 'S' | 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'C' {
     const id = modelId.toLowerCase();
 
-    if (id.includes('405b') || id.includes('o1-preview') || id.includes('o1-mini') ||
-        id.includes('claude-3-opus') || id.includes('gpt-4-turbo') || id.includes('gpt-4o') ||
-        id.includes('gemini-ultra') || id.includes('nemotron-70b')) {
+    // Premium/large models - S+ tier
+    if (id.includes('405b') || id.includes('kimi-k2') || id.includes('glm5') || id.includes('glm-5') ||
+        id.includes('deepseek-v3') || id.includes('deepseek-r1') || id.includes('o1-preview') ||
+        id.includes('o1-mini') || id.includes('claude-3-opus') || id.includes('gpt-4-turbo') ||
+        id.includes('gpt-4o') || id.includes('gemini-ultra') || id.includes('nemotron-ultra') ||
+        id.includes('nemotron-70b') || id.includes('llama-3.1-405b') || id.includes('llama-3.3-70b')) {
       return 'S+';
     }
 
+    // High quality models - S tier
     if (id.includes('70b') || id.includes('72b') || id.includes('gpt-4') ||
         id.includes('claude-3-sonnet') || id.includes('gemini-pro') ||
-        id.includes('mixtral-8x22') || id.includes('mistral-large')) {
+        id.includes('mixtral-8x22') || id.includes('mistral-large') ||
+        id.includes('qwen3') || id.includes('qwen-2.5') || id.includes('qwen2.5')) {
       return 'S';
     }
 
