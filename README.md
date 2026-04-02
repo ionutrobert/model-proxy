@@ -471,22 +471,22 @@ pm2 startup
 
 ## 🏢 Supported Providers
 
-The proxy supports major LLM providers. Model counts are approximate and vary as providers add new models:
+The proxy supports major LLM providers. Model availability varies by provider:
 
-| Provider | Free Tier | Paid Tier | Example Models |
-|----------|-----------|-----------|----------------|
-| **NVIDIA NIM** | ✅ | - | Llama 3.1, Mixtral, Nemotron (100+) |
-| **Groq** | ✅ | - | Llama 3.1, Mixtral, Gemma |
-| **OpenCode Zen** | ✅ | - | Zen Ultra, Zen Fast, Zen Balanced |
-| **OpenCode Go** | - | ✅ | Go Premium, Go Pro, Go Standard |
-| **Cerebras** | - | ✅ | Llama 3.1 70B, Llama 3.1 8B |
-| **SambaNova** | - | ✅ | Llama 3.1 70B, Llama 3.1 8B |
-| **Together AI** | - | ✅ | Llama 3.1, Mixtral, Qwen |
-| **Fireworks** | - | ✅ | Llama 3.1, Mixtral |
-| **Hyperbolic** | - | ✅ | Llama 3.1 |
-| **OpenRouter** | - | ✅ | Access to 100+ models |
+| Provider | Free Tier | Paid Tier |
+|----------|-----------|-----------|
+| **NVIDIA NIM** | ✅ | - |
+| **Groq** | ✅ | - |
+| **OpenCode Zen** | ✅ | - |
+| **OpenCode Go** | - | ✅ |
+| **Cerebras** | - | ✅ |
+| **SambaNova** | - | ✅ |
+| **Together AI** | - | ✅ |
+| **Fireworks** | - | ✅ |
+| **Hyperbolic** | - | ✅ |
+| **OpenRouter** | - | ✅ |
 
-**Total: 100+ models across 10 providers**
+**10 providers supported** - Check each provider's documentation for current model availability.
 
 ---
 
