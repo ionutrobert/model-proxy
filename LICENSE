@@ -1,0 +1,81 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2026 ionutrobert
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+
+ADDITIONAL TERMS AND CONDITIONS
+
+1. SOURCE CODE AVAILABILITY
+   If you modify this software and make it available over a network (including
+   via web application, API, or any other network service), you MUST provide
+   the complete source code of your modified version under this same license.
+
+2. ATTRIBUTION REQUIREMENT
+   Any use of this software, whether modified or unmodified, MUST include
+   clear attribution to the original author (ionutrobert) and a link to the
+   original repository: https://github.com/ionutrobert/model-proxy
+
+3. NO COMMERCIAL USE WITHOUT LICENSE
+   This software may not be used for commercial purposes without obtaining
+   a separate commercial license. Commercial use includes:
+   - Offering this software or derivatives as a paid service
+   - Using this software in a product that generates revenue
+   - Internal use within for-profit organizations for commercial purposes
+   
+   For commercial licensing inquiries, please contact the author.
+
+4. MODIFICATIONS MUST BE DOCUMENTED
+   Any modifications to this software must be clearly documented, including:
+   - What was changed
+   - Who made the change
+   - When the change was made
+   - The purpose of the change
+
+5. NETWORK USE IS DISTRIBUTION
+   As per the AGPLv3, interacting with this software over a network (such as
+   using it via API or web interface) constitutes distribution, and all users
+   interacting with the software are entitled to receive the source code.
+
+6. NO WARRANTY
+   This software is provided "as is" without warranty of any kind, express or
+   implied. In no event shall the author be liable for any claim, damages, or
+   other liability arising from the use of this software.
+
+7. PATENT LICENSE
+   The author grants a patent license to use this software in accordance with
+   the terms of this license, but this license does not grant any rights to
+   use any patents that may cover third-party components.
+
+================================================================================
+
+For the full text of the GNU Affero General Public License v3.0, see:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+SUMMARY OF KEY POINTS (Not a Substitute for Full License):
+
+- You CAN use, study, and modify this software for personal or non-commercial use
+- You CAN share this software with others
+- You MUST share your modifications if you make the software available over a network
+- You MUST attribute the original author in any use
+- You CANNOT use this software commercially without a separate license
+- You CANNOT remove this license or claim ownership
+- Network users MUST have access to your source code modifications
+- There is NO WARRANTY for this software
+
+For commercial licensing or permissions beyond the scope of this license,
+please contact the author at the repository: https://github.com/ionutrobert/model-proxy

@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  model-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: model-proxy
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # Server
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      
+      # Required: Internal API Key
+      - MODEL_PROXY_API_KEY=${MODEL_PROXY_API_KEY}
+      
+      # Provider API Keys (at least one required)
+      - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY:-}
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY:-}
+      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
+      - HYPERBOLIC_API_KEY=${HYPERBOLIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      
+      # Health Check Configuration
+      - HEALTH_CHECK_TIMEOUT_MS=${HEALTH_CHECK_TIMEOUT_MS:-5000}
+      - HEALTH_CHECK_CACHE_TTL_MS=${HEALTH_CHECK_CACHE_TTL_MS:-300000}
+      
+      # Circuit Breaker
+      - CIRCUIT_BREAKER_THRESHOLD=${CIRCUIT_BREAKER_THRESHOLD:-5}
+      - CIRCUIT_BREAKER_RESET_MS=${CIRCUIT_BREAKER_RESET_MS:-60000}
+      
+      # Preferences
+      - PREFER_FREE_PROVIDERS=${PREFER_FREE_PROVIDERS:-1}
+      - PROVIDER_PRIORITY=${PROVIDER_PRIORITY:-nvidia-nim,opencode-go,groq}
+      - MAX_LATENCY_MS=${MAX_LATENCY_MS:-5000}
+      - FALLBACK_STRATEGY=${FALLBACK_STRATEGY:-priority}
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - model-proxy-network
+
+networks:
+  model-proxy-network:
+    driver: bridge
