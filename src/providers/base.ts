@@ -142,23 +142,35 @@ export abstract class BaseProvider {
     }
 
     const data = line.slice(6).trim();
-    
+
     if (data === '[DONE]') {
       return null;
     }
 
     try {
       const parsed = JSON.parse(data);
+      const choices = parsed.choices || [];
+      
+      // Handle reasoning models that use 'reasoning' field in delta
+      const mappedChoices = choices.map((choice: any) => {
+        const delta = choice.delta || {};
+        // If content is null/empty but reasoning exists, use reasoning
+        if (!delta.content && (delta.reasoning || delta.reasoning_content)) {
+          delta.content = delta.reasoning || delta.reasoning_content;
+        }
+        return {
+          index: choice.index || 0,
+          delta: delta,
+          finish_reason: choice.finish_reason || null,
+        };
+      });
+      
       return {
         id: parsed.id || `chatcmpl-${Date.now()}`,
         object: 'chat.completion.chunk',
         created: parsed.created || Math.floor(Date.now() / 1000),
         model: parsed.model || 'unknown',
-        choices: parsed.choices || [{
-          index: 0,
-          delta: parsed.choices?.[0]?.delta || {},
-          finish_reason: parsed.choices?.[0]?.finish_reason || null,
-        }],
+        choices: mappedChoices,
       };
     } catch {
       return null;
