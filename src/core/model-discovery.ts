@@ -171,31 +171,66 @@ export class ModelDiscovery {
     const id = modelId.toLowerCase();
 
     // Explicit context markers
-    if (id.includes('128k') || id.includes('128000')) return 128000;
+    if (id.includes('256k') || id.includes('256000')) return 256000;
     if (id.includes('200k') || id.includes('200000')) return 200000;
+    if (id.includes('128k') || id.includes('128000')) return 128000;
     if (id.includes('100k') || id.includes('100000')) return 100000;
-    if (id.includes('32k') || id.includes('32768')) return 32768;
     if (id.includes('64k') || id.includes('65536')) return 65536;
+    if (id.includes('32k') || id.includes('32768')) return 32768;
     if (id.includes('16k') || id.includes('16384')) return 16384;
     if (id.includes('8k') || id.includes('8192')) return 8192;
     if (id.includes('4k') || id.includes('4096')) return 4096;
 
-    // Premium models with large context
-    if (id.includes('kimi-k2') || id.includes('glm5') || id.includes('glm-5')) return 128000;
+    // S+ tier models (synced with curated-models.ts)
+    // DeepSeek
     if (id.includes('deepseek-v3') || id.includes('deepseek-r1')) return 128000;
+    
+    // Kimi
+    if (id.includes('kimi-k2-thinking')) return 256000;
+    if (id.includes('kimi-k2')) return 128000;
+    
+    // GLM
+    if (id.includes('glm4.7') || id.includes('glm-4.7')) return 200000;
+    if (id.includes('glm5') || id.includes('glm-5')) return 128000;
+    
+    // MiniMax
+    if (id.includes('minimax-m2.5') || id.includes('minimax-m2.1')) return 200000;
+    if (id.includes('minimax-m2')) return 128000;
+    
+    // Qwen
+    if (id.includes('qwen3-coder') || id.includes('qwen3-480b')) return 256000;
+    if (id.includes('qwen3-235b')) return 128000;
+    
+    // Other S+ models
+    if (id.includes('step-3.5')) return 256000;
+    if (id.includes('devstral')) return 256000;
+    
+    // Llama
     if (id.includes('llama-3.1') || id.includes('llama3.1') || id.includes('llama-3.3')) return 128000;
     if (id.includes('llama-3') || id.includes('llama3')) return 8192;
+    
+    // OpenAI
     if (id.includes('gpt-4') || id.includes('gpt4')) {
       if (id.includes('turbo') || id.includes('1106') || id.includes('0125')) return 128000;
       return 8192;
     }
     if (id.includes('gpt-3.5') || id.includes('gpt35')) return 16384;
+    
+    // Anthropic
     if (id.includes('claude-3') || id.includes('claude3')) return 200000;
     if (id.includes('claude-2') || id.includes('claude2')) return 100000;
+    
+    // Mistral
     if (id.includes('mistral-large') || id.includes('mixtral-8x22')) return 65536;
     if (id.includes('mixtral') || id.includes('mistral')) return 32768;
+    
+    // Google
     if (id.includes('gemini')) return 32000;
+    
+    // Qwen general
     if (id.includes('qwen3') || id.includes('qwen2.5') || id.includes('qwen-2.5')) return 32768;
+    
+    // NVIDIA
     if (id.includes('nemotron')) return 128000;
 
     return 8192;
@@ -220,37 +255,59 @@ export class ModelDiscovery {
   estimateTier(modelId: string): 'S+' | 'S' | 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'C' {
     const id = modelId.toLowerCase();
 
-    // Premium/large models - S+ tier
-    if (id.includes('405b') || id.includes('kimi-k2') || id.includes('glm5') || id.includes('glm-5') ||
-        id.includes('deepseek-v3') || id.includes('deepseek-r1') || id.includes('o1-preview') ||
-        id.includes('o1-mini') || id.includes('claude-3-opus') || id.includes('gpt-4-turbo') ||
-        id.includes('gpt-4o') || id.includes('gemini-ultra') || id.includes('nemotron-ultra') ||
-        id.includes('nemotron-70b') || id.includes('llama-3.1-405b') || id.includes('llama-3.3-70b')) {
+    // S+ tier - Premium/large models (synced with curated-models.ts)
+    if (
+      // DeepSeek models
+      id.includes('deepseek-v3') || id.includes('deepseek-r1') ||
+      // Kimi models
+      id.includes('kimi-k2') || id.includes('moonshotai/kimi') ||
+      // GLM models
+      id.includes('glm5') || id.includes('glm-5') || id.includes('glm4.7') || id.includes('glm-4.7') ||
+      // MiniMax models
+      id.includes('minimax-m2.5') || id.includes('minimax-m2.1') || id.includes('minimax-m2') ||
+      // Qwen models
+      id.includes('qwen3-coder') || id.includes('qwen3-480b') || id.includes('qwen3-235b') ||
+      // Other premium
+      id.includes('step-3.5') || id.includes('devstral') ||
+      // Large parameter models
+      id.includes('405b') || id.includes('llama-3.1-405b') || id.includes('llama-3.3-70b') ||
+      id.includes('nemotron-ultra') || id.includes('nemotron-70b') ||
+      // OpenAI/Anthropic/Google top tier
+      id.includes('o1-preview') || id.includes('o1-mini') ||
+      id.includes('claude-3-opus') || id.includes('gpt-4-turbo') || id.includes('gpt-4o') ||
+      id.includes('gemini-ultra')
+    ) {
       return 'S+';
     }
 
-    // High quality models - S tier
-    if (id.includes('70b') || id.includes('72b') || id.includes('gpt-4') ||
-        id.includes('claude-3-sonnet') || id.includes('gemini-pro') ||
-        id.includes('mixtral-8x22') || id.includes('mistral-large') ||
-        id.includes('qwen3') || id.includes('qwen-2.5') || id.includes('qwen2.5')) {
+    // S tier - High quality models
+    if (
+      id.includes('70b') || id.includes('72b') ||
+      id.includes('gpt-4') || id.includes('claude-3-sonnet') || id.includes('gemini-pro') ||
+      id.includes('mixtral-8x22') || id.includes('mistral-large') ||
+      id.includes('qwen3') || id.includes('qwen2.5') || id.includes('qwen-2.5')
+    ) {
       return 'S';
     }
 
-    if (id.includes('34b') || id.includes('mixtral-8x7') || id.includes('claude-3-haiku') ||
-        id.includes('gpt-3.5-turbo') || id.includes('gemini-flash')) {
+    // A+ tier
+    if (id.includes('34b') || id.includes('mixtral-8x7') ||
+        id.includes('claude-3-haiku') || id.includes('gpt-3.5-turbo') || id.includes('gemini-flash')) {
       return 'A+';
     }
 
+    // A tier
     if (id.includes('13b') || id.includes('14b') || id.includes('7b') || id.includes('8b') ||
         id.includes('mistral-7b') || id.includes('llama-3-8') || id.includes('llama3-8')) {
       return 'A';
     }
 
+    // A- tier
     if (id.includes('6b') || id.includes('gemma-7')) {
       return 'A-';
     }
 
+    // B+ tier
     if (id.includes('2b') || id.includes('3b') || id.includes('gemma-2')) {
       return 'B+';
     }
