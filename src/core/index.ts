@@ -76,6 +76,7 @@ import { smartModelSelector, SelectionMode } from './smart-selector.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
+import { healthTracker } from './health-tracker.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -114,6 +115,29 @@ export class ModelProxyCore {
 
     this.healthResults = result.healthResults;
     this.allModels = result.allModels;
+
+    // Sync health data into our health tracker for auto-modes
+    for (const hr of result.healthResults) {
+      if (hr.status === 'healthy' && hr.latency > 0) {
+        healthTracker.recordRequest(hr.modelId, hr.providerId, {
+          latency: hr.latency,
+          statusCode: '200',
+          success: true,
+        });
+      } else if (hr.status === 'unhealthy') {
+        healthTracker.recordRequest(hr.modelId, hr.providerId, {
+          latency: hr.latency > 0 ? hr.latency : 0,
+          statusCode: hr.latency === 0 ? 'ERR' : '500',
+          success: false,
+        });
+      } else if (hr.status === 'timeout') {
+        healthTracker.recordRequest(hr.modelId, hr.providerId, {
+          latency: 0,
+          statusCode: '000',
+          success: false,
+        });
+      }
+    }
 
     this.rankedModels = smartModelSelector.rankModels(
       this.allModels,
@@ -165,7 +189,28 @@ export class ModelProxyCore {
         throw new Error(`Provider ${modelConfig.provider} not initialized`);
       }
 
-      return provider.execute({ ...request, model: modelId });
+      const startTime = performance.now();
+      try {
+        const response = await provider.execute({ ...request, model: modelId });
+        const latency = Math.round(performance.now() - startTime);
+        healthTracker.recordRequest(modelId, modelConfig.provider, {
+          latency,
+          statusCode: '200',
+          success: true,
+        });
+        return response;
+      } catch (error) {
+        const latency = Math.round(performance.now() - startTime);
+        const msg = error instanceof Error ? error.message : String(error);
+        let statusCode = 'ERR';
+        let success = false;
+        if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
+        else if (msg.includes('429')) { statusCode = '429'; success = false; }
+        else if (msg.includes('404')) { statusCode = '404'; success = false; }
+        else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+        healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
+        throw error;
+      }
     }
 
     const mode = options?.mode || 'best';
@@ -267,6 +312,7 @@ export class ModelProxyCore {
     fallbackChain: RankedModel[]
   ): Promise<ChatCompletionResponse> {
     const errors: string[] = [];
+    const startTime = performance.now();
 
     for (const rankedModel of fallbackChain) {
       const provider = this.providers.get(rankedModel.model.provider);
@@ -274,18 +320,34 @@ export class ModelProxyCore {
 
       try {
         console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
+        const modelStartTime = performance.now();
         const response = await provider.execute({
           ...request,
           model: rankedModel.model.id,
         });
+        const latency = Math.round(performance.now() - modelStartTime);
 
         circuitBreaker.recordSuccess(rankedModel.model.provider);
-        console.log(`✓ Success with ${rankedModel.model.name}`);
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+          latency,
+          statusCode: '200',
+          success: true,
+        });
+        console.log(`✓ Success with ${rankedModel.model.name} (${latency}ms)`);
         return response;
       } catch (error) {
+        const latency = Math.round(performance.now() - startTime);
         const errorMessage = error instanceof Error ? error.message : String(error);
         errors.push(`${rankedModel.model.name}: ${errorMessage}`);
         console.error(`✗ ${rankedModel.model.name} failed: ${errorMessage}`);
+
+        let statusCode = 'ERR';
+        let success = false;
+        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
+        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
+        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
+        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
 
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
       }
