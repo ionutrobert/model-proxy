@@ -11,6 +11,9 @@ import {
   ModelProxyError,
   AuthenticationError,
 } from '../core/types.js';
+import { autoModesHandler, AutoMode } from '../core/auto-modes.js';
+import { healthTracker } from '../core/health-tracker.js';
+import { proxyExecutor } from '../core/proxy-executor.js';
 
 // ============================================================================
 // Request Validation Schemas
@@ -114,7 +117,28 @@ export function createChatRoutes(proxy: ModelProxyCore) {
     let useAutoSelection = true;
     const modelId = request.model || 'auto';
 
-    if (modelId === 'auto-best' || modelId === 'auto') {
+    // New auto-modes (health-aware)
+    const newAutoModes: AutoMode[] = ['auto-coding', 'auto-fast', 'auto-balanced'];
+    if (newAutoModes.includes(modelId as AutoMode)) {
+      const allModels = proxy.getAvailableModels();
+      const allHealth = healthTracker.getAllHealth();
+      const selection = autoModesHandler.select(modelId as AutoMode, allModels, allHealth);
+      
+      if (!selection) {
+        res.status(500).json({
+          error: {
+            message: `No suitable model found for ${modelId}`,
+            type: 'server_error',
+            code: 'no_model_available',
+          },
+        });
+        return;
+      }
+
+      console.log(`[AUTO-MODE] ${modelId} → ${selection.selected.id} (${selection.reason})`);
+      request.model = selection.selected.id;
+      useAutoSelection = false;
+    } else if (modelId === 'auto-best' || modelId === 'auto') {
       mode = 'best';
       request.model = undefined;
     } else if (modelId === 'auto-fastest') {
@@ -123,14 +147,10 @@ export function createChatRoutes(proxy: ModelProxyCore) {
     } else if (modelId === 'auto-cheapest') {
       mode = 'cheapest';
       request.model = undefined;
-    } else if (modelId === 'auto-coding') {
-      mode = 'coding';
-      request.model = undefined;
     } else if (modelId === 'auto-reasoning') {
       mode = 'reasoning';
       request.model = undefined;
     } else {
-      // Specific model requested - use direct execution
       useAutoSelection = false;
     }
 
@@ -253,7 +273,29 @@ export function createModelRoutes(proxy: ModelProxyCore) {
           root: 'auto-coding',
           parent: null,
           context_window: 128000,
-          description: 'Selects the best model for coding tasks',
+          description: 'Selects the best model for coding tasks (health-aware, prefers thinking models)',
+        },
+        {
+          id: 'auto-fast',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-fast',
+          parent: null,
+          context_window: 128000,
+          description: 'Selects the fastest stable model (health-aware, max 1s latency)',
+        },
+        {
+          id: 'auto-balanced',
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'model-proxy',
+          permission: [],
+          root: 'auto-balanced',
+          parent: null,
+          context_window: 128000,
+          description: 'Balances quality and speed (health-aware, stability + SWE score)',
         },
       ];
 
