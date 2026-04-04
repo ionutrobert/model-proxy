@@ -83,7 +83,7 @@ export abstract class BaseProvider {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout),
+      signal: this.config.timeout > 0 ? AbortSignal.timeout(this.config.timeout) : undefined,
     });
 
     return response;

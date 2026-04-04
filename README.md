@@ -85,6 +85,26 @@ export const POST = handlers.chat;
 - **Automatic failover** to healthy providers
 - **Cached health results** (5-minute default)
 
+### 📊 Passive Health Tracking
+
+- **Zero extra API calls** - Health tracked from real proxy requests
+- **Rolling window** - Last 20 requests per model
+- **Stability scoring** - 30% p95 + 30% jitter + 20% spikes + 20% uptime
+- **Adaptive thresholds** - Thinking models get 10x higher latency tolerance
+- **Verdict system** - Perfect, Normal, Slow, Unstable, Overloaded, Not Active
+
+### 🤖 Auto-Modes
+
+- **`auto-coding`** - Best model for coding (prefers thinking models, 80k+ context)
+- **`auto-fast`** - Fastest stable model (<1s latency)
+- **`auto-balanced`** - Balances quality and speed
+
+### 📈 Metrics & Monitoring
+
+- **`/metrics`** - Prometheus-compatible metrics for Grafana/Datadog
+- **`/metrics/json`** - JSON metrics for programmatic access
+- **`/health`** - Enhanced with stability scores and health tracker data
+
 ### ⚡ Circuit Breaker Pattern
 
 - **Automatic failure detection**
@@ -327,11 +347,75 @@ Health and status endpoint.
 
 ### Authentication
 
-All endpoints (except `/health`) require Bearer token:
+All endpoints (except `/health`, `/metrics`) require Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer your-proxy-api-key" \
   http://localhost:3000/v1/chat/completions
+```
+
+### Auto-Mode Usage
+
+Use auto-modes as the `model` parameter:
+
+```bash
+# Best model for coding tasks
+curl -H "Authorization: Bearer your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto-coding","messages":[{"role":"user","content":"Write a function"}]}' \
+  http://localhost:3000/v1/chat/completions
+
+# Fastest stable model
+curl -H "Authorization: Bearer your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto-fast","messages":[{"role":"user","content":"Hello"}]}' \
+  http://localhost:3000/v1/chat/completions
+
+# Balanced quality/speed
+curl -H "Authorization: Bearer your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto-balanced","messages":[{"role":"user","content":"Explain this"}]}' \
+  http://localhost:3000/v1/chat/completions
+```
+
+### Monitoring Endpoints
+
+#### GET `/metrics`
+
+Prometheus-compatible metrics (no auth required):
+
+```
+# HELP model_proxy_model_stability Model stability score (0-100)
+# TYPE model_proxy_model_stability gauge
+model_proxy_model_stability{model="z_ai_glm5",verdict="Perfect"} 95
+model_proxy_model_stability{model="moonshotai_kimi_k2_5",verdict="Perfect"} 92
+...
+```
+
+#### GET `/metrics/json`
+
+JSON metrics (no auth required):
+
+```json
+{
+  "timestamp": "2026-04-04T14:00:00Z",
+  "models": {
+    "z-ai/glm5": {
+      "stability": 95,
+      "verdict": "Perfect",
+      "latency": { "avg": 300, "p95": 380, "jitter": 45 },
+      "uptime": 98.5,
+      "requests": { "total": 150, "successful": 148 }
+    }
+  },
+  "summary": {
+    "totalModels": 15,
+    "avgStability": 85,
+    "healthyProviders": 2,
+    "perfectModels": 10,
+    "unhealthyModels": 1
+  }
+}
 ```
 
 ---
@@ -348,6 +432,45 @@ The proxy automatically selects the best model based on:
 4. **Latency** - Lower is better
 5. **Preferences** - Primary (1.5x) > Secondary (1x) > Fallback (0.7x)
 6. **Cost** - Free providers prioritized if configured
+
+### Health-Aware Auto-Modes
+
+The proxy supports health-aware auto-modes that use real-time stability data:
+
+| Mode | Description | Min Tier | Min Context | Thinking |
+|------|-------------|----------|-------------|----------|
+| `auto-coding` | Best for coding tasks | A | 80k | ✅ Preferred |
+| `auto-fast` | Fastest stable model | A- | 8k | ❌ Too slow |
+| `auto-balanced` | Quality + speed balance | A- | 32k | ❌ |
+
+**Auto-coding** prefers thinking/reasoning models (kimi-k2-thinking, deepseek-r1, qwq-32b) with adaptive latency thresholds (10x higher tolerance).
+
+**Auto-fast** selects models with <1s average latency and high stability scores.
+
+**Auto-balanced** combines stability score, SWE-bench score, and tier for optimal selection.
+
+### Stability Scoring
+
+Each model receives a stability score (0-100) based on:
+
+- **30% P95 Latency** - 95th percentile response time
+- **30% Jitter** - Latency consistency (standard deviation)
+- **20% Spike Rate** - Percentage of requests >3x average latency
+- **20% Uptime** - Success rate percentage
+
+### Verdicts
+
+| Verdict | Description | Latency Range |
+|---------|-------------|---------------|
+| **Perfect** | Fast and consistent | <400ms |
+| **Normal** | Acceptable performance | 400-1000ms |
+| **Slow** | Noticeable delay | 1000-3000ms |
+| **Very Slow** | High latency | 3000-5000ms |
+| **Unstable** | Errors or extreme latency | >5000ms or errors |
+| **Overloaded** | Rate limited (429) | Any |
+| **Not Active** | Connection failures | N/A |
+
+*Thinking models use 10x higher thresholds (e.g., Perfect = <10s)*
 
 ### Selection Output
 

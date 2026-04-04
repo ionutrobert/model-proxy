@@ -28,7 +28,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'NVIDIA NIM',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
     apiKeyEnvVar: 'NVIDIA_NIM_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: true,
     models: [
@@ -96,7 +96,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'OpenCode Go',
     baseUrl: 'https://api.opencode.ai/v1/go',
     apiKeyEnvVar: 'OPENCODE_API_KEY',
-    defaultTimeout: 60000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 10000,
     isFree: false,
     models: [
@@ -135,7 +135,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'OpenCode Zen',
     baseUrl: 'https://api.opencode.ai/v1/zen',
     apiKeyEnvVar: 'OPENCODE_API_KEY',
-    defaultTimeout: 60000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 10000,
     isFree: true,
     models: [
@@ -175,7 +175,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
     apiKeyEnvVar: 'GROQ_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 3000,
     isFree: true,
     models: [
@@ -223,7 +223,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'Cerebras',
     baseUrl: 'https://api.cerebras.ai/v1',
     apiKeyEnvVar: 'CEREBRAS_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [
@@ -248,7 +248,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'SambaNova',
     baseUrl: 'https://api.sambanova.ai/v1',
     apiKeyEnvVar: 'SAMBANOVA_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [
@@ -273,7 +273,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'Together AI',
     baseUrl: 'https://api.together.ai/v1',
     apiKeyEnvVar: 'TOGETHER_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [
@@ -298,7 +298,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'Fireworks AI',
     baseUrl: 'https://api.fireworks.ai/inference/v1',
     apiKeyEnvVar: 'FIREWORKS_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [
@@ -316,7 +316,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'Hyperbolic',
     baseUrl: 'https://api.hyperbolic.ai/v1',
     apiKeyEnvVar: 'HYPERBOLIC_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [
@@ -334,7 +334,7 @@ const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     name: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     apiKeyEnvVar: 'OPENROUTER_API_KEY',
-    defaultTimeout: 30000,
+    defaultTimeout: 0,
     defaultHealthCheckTimeout: 5000,
     isFree: false,
     models: [

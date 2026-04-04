@@ -283,23 +283,66 @@ export class ModelProxyCore {
       const provider = this.providers.get(rankedModel.model.provider);
       if (!provider) continue;
 
+      const streamStartTime = performance.now();
+      let streamSuccess = false;
+
       try {
         await provider.executeStreaming(
           { ...request, model: rankedModel.model.id },
           onChunk,
-          onComplete,
-          onError
+          () => {
+            const latency = Math.round(performance.now() - streamStartTime);
+            streamSuccess = true;
+            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+              latency,
+              statusCode: '200',
+              success: true,
+            });
+            circuitBreaker.recordSuccess(rankedModel.model.provider);
+            onComplete?.();
+          },
+          (error) => {
+            const latency = Math.round(performance.now() - streamStartTime);
+            streamSuccess = false;
+            let statusCode = 'ERR';
+            const msg = error.message;
+            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+            else if (msg.includes('429')) { statusCode = '429'; }
+            else if (msg.includes('404')) { statusCode = '404'; }
+            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
+            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+              latency,
+              statusCode,
+              success: false,
+            });
+            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+
+            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+              onError?.(error);
+            }
+          }
         );
 
-        circuitBreaker.recordSuccess(rankedModel.model.provider);
-        return;
+        if (streamSuccess) {
+          return;
+        }
       } catch (error) {
+        const latency = Math.round(performance.now() - streamStartTime);
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
+
+        let statusCode = 'ERR';
+        let success = false;
+        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
+        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
+        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
+        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
+
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-        if (onError && fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-          onError(error instanceof Error ? error : new Error(errorMessage));
+        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+          onError?.(error instanceof Error ? error : new Error(errorMessage));
         }
       }
     }

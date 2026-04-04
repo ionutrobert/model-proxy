@@ -14,6 +14,7 @@ import {
 import { autoModesHandler, AutoMode } from '../core/auto-modes.js';
 import { healthTracker } from '../core/health-tracker.js';
 import { proxyExecutor } from '../core/proxy-executor.js';
+import { circuitBreaker } from '../core/circuit-breaker.js';
 
 // ============================================================================
 // Request Validation Schemas
@@ -45,8 +46,8 @@ const chatCompletionRequestSchema = z.object({
 
 export function createAuthMiddleware(proxyApiKey: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    // Skip auth for health check endpoint
-    if (req.path === '/health' || req.path === '/health/simple') {
+    // Skip auth for health check and metrics endpoints
+    if (req.path === '/health' || req.path === '/health/simple' || req.path.startsWith('/metrics')) {
       next();
       return;
     }
@@ -369,6 +370,24 @@ export function createHealthRoutes(proxy: ModelProxyCore) {
     try {
       const health = proxy.getHealthStatus();
       const config = proxy.getConfig();
+      const allHealth = healthTracker.getAllHealth();
+
+      const trackerSummary = {
+        totalModels: allHealth.size,
+        byVerdict: {} as Record<string, number>,
+        avgStability: 0,
+        perfect: 0,
+        unhealthy: 0,
+      };
+
+      let totalStability = 0;
+      for (const [modelId, h] of allHealth) {
+        trackerSummary.byVerdict[h.verdict] = (trackerSummary.byVerdict[h.verdict] || 0) + 1;
+        totalStability += h.stabilityScore;
+        if (h.verdict === 'Perfect') trackerSummary.perfect++;
+        if (['Unstable', 'Not Active', 'Overloaded'].includes(h.verdict)) trackerSummary.unhealthy++;
+      }
+      trackerSummary.avgStability = allHealth.size > 0 ? Math.round(totalStability / allHealth.size) : 0;
       
       res.json({
         status: 'healthy',
@@ -384,20 +403,39 @@ export function createHealthRoutes(proxy: ModelProxyCore) {
             isFree: p.isFree,
           })),
         },
+        healthTracker: {
+          summary: trackerSummary,
+          topModels: [...allHealth.entries()]
+            .sort((a, b) => b[1].stabilityScore - a[1].stabilityScore)
+            .slice(0, 10)
+            .map(([id, h]) => ({
+              id,
+              verdict: h.verdict,
+              stability: h.stabilityScore,
+              avgLatency: h.metrics.avgLatency,
+              p95Latency: h.metrics.p95Latency,
+              uptime: h.metrics.uptimePercent,
+              totalRequests: h.metrics.totalRequests,
+            })),
+        },
         models: {
           total: health.models.length,
           byTier: health.models.reduce((acc, m) => {
             acc[m.tier] = (acc[m.tier] || 0) + 1;
             return acc;
           }, {} as Record<string, number>),
-          top: health.models.slice(0, 5).map(m => ({
-            id: m.model.id,
-            name: m.model.name,
-            provider: m.model.provider,
-            tier: m.model.tier,
-            latency: m.health.latency,
-            score: m.stabilityScore.toFixed(2),
-          })),
+          top: health.models.slice(0, 10).map(m => {
+            const h = allHealth.get(m.model.id.toLowerCase());
+            return {
+              id: m.model.id,
+              name: m.model.name,
+              provider: m.model.provider,
+              tier: m.model.tier,
+              latency: m.health.latency,
+              stability: h?.stabilityScore ?? -1,
+              verdict: h?.verdict ?? 'Pending',
+            };
+          }),
         },
         circuit_breaker: {
           providers: health.providers.map(p => ({
@@ -471,10 +509,13 @@ function handleError(error: unknown, res: Response): void {
 export function createExpressRoutes(proxy: ModelProxyCore, proxyApiKey: string) {
   const router = Router();
 
-  // Apply authentication
+  // Mount public routes (no auth)
+  router.use('/metrics', createMetricsRoutes(proxy));
+
+  // Apply authentication to protected routes
   router.use(createAuthMiddleware(proxyApiKey));
 
-  // Mount routes
+  // Mount protected routes
   router.use('/v1/chat', createChatRoutes(proxy));
   router.use('/v1/models', createModelRoutes(proxy));
   router.use('/health', createHealthRoutes(proxy));
@@ -488,6 +529,207 @@ export function createExpressRoutes(proxy: ModelProxyCore, proxyApiKey: string) 
         code: 'route_not_found',
       },
     });
+  });
+
+  return router;
+}
+
+// ============================================================================
+// Metrics Routes
+// ============================================================================
+
+export function createMetricsRoutes(proxy: ModelProxyCore) {
+  const router = Router();
+
+  /**
+   * GET /metrics
+   * Prometheus-compatible metrics
+   */
+  router.get('/', (req: Request, res: Response): void => {
+    const allHealth = healthTracker.getAllHealth();
+    const providerHealth = circuitBreaker.getHealthStatus();
+    
+    const lines: string[] = [];
+    const timestamp = Date.now();
+    
+    lines.push('# HELP model_proxy_model_stability Model stability score (0-100)');
+    lines.push('# TYPE model_proxy_model_stability gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_stability{model="${safeId}",verdict="${health.verdict}"} ${health.stabilityScore}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_latency_avg Average latency in ms');
+    lines.push('# TYPE model_proxy_model_latency_avg gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_latency_avg{model="${safeId}"} ${health.metrics.avgLatency}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_latency_p95 P95 latency in ms');
+    lines.push('# TYPE model_proxy_model_latency_p95 gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_latency_p95{model="${safeId}"} ${health.metrics.p95Latency}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_jitter Latency jitter in ms');
+    lines.push('# TYPE model_proxy_model_jitter gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_jitter{model="${safeId}"} ${health.metrics.jitter}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_uptime_percent Model uptime percentage');
+    lines.push('# TYPE model_proxy_model_uptime_percent gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_uptime_percent{model="${safeId}"} ${health.metrics.uptimePercent}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_spike_rate Spike rate (fraction)');
+    lines.push('# TYPE model_proxy_model_spike_rate gauge');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_spike_rate{model="${safeId}"} ${health.metrics.spikeRate}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_requests_total Total requests per model');
+    lines.push('# TYPE model_proxy_model_requests_total counter');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_requests_total{model="${safeId}"} ${health.metrics.totalRequests}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_model_requests_successful Successful requests per model');
+    lines.push('# TYPE model_proxy_model_requests_successful counter');
+    for (const [modelId, health] of allHealth) {
+      const safeId = modelId.replace(/[^a-zA-Z0-9_]/g, '_');
+      lines.push(`model_proxy_model_requests_successful{model="${safeId}"} ${health.metrics.successfulRequests}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_provider_status Provider health status (1=healthy, 0=unhealthy)');
+    lines.push('# TYPE model_proxy_provider_status gauge');
+    for (const provider of providerHealth) {
+      lines.push(`model_proxy_provider_status{provider="${provider.providerId}"} ${provider.status === 'closed' ? 1 : 0}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_provider_failures Provider failure count');
+    lines.push('# TYPE model_proxy_provider_failures gauge');
+    for (const provider of providerHealth) {
+      lines.push(`model_proxy_provider_failures{provider="${provider.providerId}"} ${provider.failureCount}`);
+    }
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_proxy_executor_total Total proxy executor requests');
+    lines.push('# TYPE model_proxy_proxy_executor_total gauge');
+    const metrics = proxyExecutor.getMetrics();
+    lines.push(`model_proxy_proxy_executor_total ${metrics.totalRequests}`);
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_proxy_executor_successful Successful proxy executor requests');
+    lines.push('# TYPE model_proxy_proxy_executor_successful gauge');
+    lines.push(`model_proxy_proxy_executor_successful ${metrics.successfulRequests}`);
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_proxy_executor_failed Failed proxy executor requests');
+    lines.push('# TYPE model_proxy_proxy_executor_failed gauge');
+    lines.push(`model_proxy_proxy_executor_failed ${metrics.failedRequests}`);
+    
+    lines.push('');
+    lines.push('# HELP model_proxy_proxy_executor_avg_latency Average proxy executor latency in ms');
+    lines.push('# TYPE model_proxy_proxy_executor_avg_latency gauge');
+    lines.push(`model_proxy_proxy_executor_avg_latency ${metrics.avgLatency}`);
+    
+    res.set('Content-Type', 'text/plain; version=0.0.4');
+    res.send(lines.join('\n') + '\n');
+  });
+
+  /**
+   * GET /metrics/json
+   * JSON metrics for programmatic access
+   */
+  router.get('/json', (req: Request, res: Response): void => {
+    const allHealth = healthTracker.getAllHealth();
+    const providerHealth = circuitBreaker.getHealthStatus();
+    const proxyMetrics = proxyExecutor.getMetrics();
+    
+    const metrics = {
+      timestamp: new Date().toISOString(),
+      models: {} as Record<string, {
+        stability: number;
+        verdict: string;
+        latency: { avg: number; p95: number; jitter: number };
+        uptime: number;
+        spikeRate: number;
+        requests: { total: number; successful: number };
+      }>,
+      providers: {} as Record<string, {
+        status: string;
+        failures: number;
+        lastFailure: string | null;
+      }>,
+      proxyExecutor: {
+        totalRequests: proxyMetrics.totalRequests,
+        successfulRequests: proxyMetrics.successfulRequests,
+        failedRequests: proxyMetrics.failedRequests,
+        avgLatency: proxyMetrics.avgLatency,
+        modelsUsed: Object.fromEntries(proxyMetrics.modelsUsed),
+      },
+      summary: {
+        totalModels: allHealth.size,
+        avgStability: 0,
+        healthyProviders: providerHealth.filter(p => p.status === 'closed').length,
+        unhealthyModels: 0,
+        perfectModels: 0,
+      },
+    };
+    
+    let totalStability = 0;
+    for (const [modelId, health] of allHealth) {
+      metrics.models[modelId] = {
+        stability: health.stabilityScore,
+        verdict: health.verdict,
+        latency: {
+          avg: health.metrics.avgLatency,
+          p95: health.metrics.p95Latency,
+          jitter: health.metrics.jitter,
+        },
+        uptime: health.metrics.uptimePercent,
+        spikeRate: health.metrics.spikeRate,
+        requests: {
+          total: health.metrics.totalRequests,
+          successful: health.metrics.successfulRequests,
+        },
+      };
+      totalStability += health.stabilityScore;
+      if (['Unstable', 'Not Active', 'Overloaded'].includes(health.verdict)) {
+        metrics.summary.unhealthyModels++;
+      }
+      if (health.verdict === 'Perfect') {
+        metrics.summary.perfectModels++;
+      }
+    }
+    metrics.summary.avgStability = allHealth.size > 0 ? Math.round(totalStability / allHealth.size) : 0;
+    
+    for (const provider of providerHealth) {
+      metrics.providers[provider.providerId] = {
+        status: provider.status,
+        failures: provider.failureCount,
+        lastFailure: provider.lastFailure ? new Date(provider.lastFailure).toISOString() : null,
+      };
+    }
+    
+    res.json(metrics);
   });
 
   return router;

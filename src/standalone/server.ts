@@ -12,6 +12,10 @@ import { ConfigManager, getConfig } from '../core/config.js';
 import { ModelProxyCore } from '../core/index.js';
 import { createExpressRoutes } from '../adapters/express.js';
 import { createLoggingMiddleware, createErrorMiddleware } from './middleware.js';
+import { backgroundPoller } from '../core/background-poller.js';
+import { dynamicHealthService } from '../core/dynamic-health-service.js';
+import { healthTracker } from '../core/health-tracker.js';
+import type { ProviderId, ProviderConfig } from '../core/types.js';
 
 // Load environment variables
 dotenv.config();
@@ -130,13 +134,63 @@ async function initializeProxy(): Promise<ModelProxyCore> {
 }
 
 // ============================================================================
+// Setup Background Poller
+// ============================================================================
+
+function setupBackgroundPoller(proxy: ModelProxyCore, config: any): void {
+  const pollingEnabled = process.env.BACKGROUND_POLLING_ENABLED !== 'false';
+  
+  if (!pollingEnabled) {
+    console.log('⏹️ Background polling disabled (set BACKGROUND_POLLING_ENABLED=true to enable)');
+    return;
+  }
+
+  // Create poll function using dynamicHealthService
+  const pollFn = async (modelId: string, providerId: ProviderId) => {
+    const providerConfig = config.providers.find((p: ProviderConfig) => p.id === providerId);
+    if (!providerConfig) {
+      throw new Error(`Provider ${providerId} not found`);
+    }
+
+    const result = await dynamicHealthService.checkSingleModel(providerConfig, modelId, {
+      max_tokens: 1,
+      timeout: parseInt(process.env.BACKGROUND_POLL_TIMEOUT_MS || '15000'),
+    });
+
+    return {
+      latency: result.latency,
+      statusCode: result.status === 'healthy' ? '200' : result.status === 'timeout' ? '000' : 'ERR',
+    };
+  };
+
+  // Configure poller
+  backgroundPoller.setPollFn(pollFn);
+  backgroundPoller.setModels(proxy.getAvailableModels());
+  backgroundPoller.setConfig({
+    enabled: true,
+    intervalMs: parseInt(process.env.BACKGROUND_POLL_INTERVAL_MS || '30000'),
+    timeoutMs: parseInt(process.env.BACKGROUND_POLL_TIMEOUT_MS || '15000'),
+    maxConcurrent: 1,
+  });
+
+  // Start poller
+  backgroundPoller.start();
+  console.log(`🔄 Background poller started (${process.env.BACKGROUND_POLL_INTERVAL_MS || '30000'}ms interval)`);
+}
+
+// ============================================================================
 // Start Server
 // ============================================================================
 
 async function startServer() {
   try {
     const proxy = await initializeProxy();
+    const configManager = ConfigManager.getInstance();
+    const config = configManager.loadFromEnv();
     const proxyApiKey = process.env.MODEL_PROXY_API_KEY!;
+
+    // Setup background poller
+    setupBackgroundPoller(proxy, config);
 
     // Mount proxy routes
     app.use('/', createExpressRoutes(proxy, proxyApiKey));
@@ -160,6 +214,7 @@ async function startServer() {
     // Graceful shutdown
     process.on('SIGTERM', () => {
       console.log('SIGTERM received. Shutting down gracefully...');
+      backgroundPoller.stop();
       server.close(() => {
         console.log('Server closed');
         process.exit(0);
@@ -168,6 +223,7 @@ async function startServer() {
 
     process.on('SIGINT', () => {
       console.log('SIGINT received. Shutting down gracefully...');
+      backgroundPoller.stop();
       server.close(() => {
         console.log('Server closed');
         process.exit(0);

@@ -272,6 +272,46 @@ export class DynamicHealthService {
     return result;
   }
 
+  async checkSingleModel(
+    providerConfig: ProviderConfig,
+    modelId: string,
+    options?: { max_tokens?: number; timeout?: number }
+  ): Promise<{ status: string; latency: number }> {
+    const startTime = Date.now();
+
+    try {
+      const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${providerConfig.apiKey}`,
+          ...providerConfig.headers,
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: options?.max_tokens ?? 1,
+          temperature: 0,
+        }),
+        signal: AbortSignal.timeout(options?.timeout ?? 15000),
+      });
+
+      const latency = Date.now() - startTime;
+
+      if (response.ok || response.status === 401 || response.status === 403 || response.status === 400 || response.status === 429) {
+        return { status: 'healthy', latency };
+      }
+
+      return { status: 'unhealthy', latency };
+    } catch (error) {
+      const latency = Date.now() - startTime;
+      if (error instanceof Error && error.name === 'AbortError') {
+        return { status: 'timeout', latency };
+      }
+      return { status: 'unhealthy', latency };
+    }
+  }
+
   getCachedModels(providerId: ProviderId): ModelConfig[] | null {
     return this.modelCache.get(providerId) || null;
   }
