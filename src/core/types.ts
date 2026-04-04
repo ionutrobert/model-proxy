@@ -107,6 +107,36 @@ export interface ModelConfig {
 
 export type HealthStatus = 'healthy' | 'unhealthy' | 'timeout' | 'error';
 
+export type Verdict = 'Perfect' | 'Normal' | 'Slow' | 'Very Slow' | 'Spiky' | 'Unstable' | 'Overloaded' | 'Not Active' | 'Pending';
+
+export interface HealthRequest {
+  timestamp: number;
+  latency: number;
+  statusCode: string;
+  success: boolean;
+}
+
+export interface HealthMetrics {
+  avgLatency: number;
+  p95Latency: number;
+  jitter: number;
+  uptimePercent: number;
+  spikeRate: number;
+  totalRequests: number;
+  successfulRequests: number;
+}
+
+export interface ModelHealthHistory {
+  modelId: string;
+  providerId: ProviderId;
+  requests: HealthRequest[];
+  verdict: Verdict;
+  stabilityScore: number;
+  isThinking: boolean;
+  lastUpdated: number;
+  metrics: HealthMetrics;
+}
+
 export interface HealthCheckResult {
   providerId: ProviderId;
   modelId: string;
