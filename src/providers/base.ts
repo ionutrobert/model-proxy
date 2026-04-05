@@ -382,20 +382,20 @@ const mappedChoices = choices.map((choice: any) => {
 /**
  * Build request body for provider
  */
- protected buildRequestBody(request: ChatCompletionRequest): unknown {
-  const body: Record<string, unknown> = {
-    model: request.model,
-    messages: request.messages,
-    temperature: request.temperature ?? 0.7,
-    max_tokens: request.max_tokens ?? 4000,
-    stream: request.stream ?? false,
-    top_p: request.top_p ?? 1,
-    frequency_penalty: request.frequency_penalty ?? 0,
-    presence_penalty: request.presence_penalty ?? 0,
-    stop: request.stop,
-    user: request.user,
-    n: request.n ?? 1,
-  };
+  protected buildRequestBody(request: ChatCompletionRequest): unknown {
+   const body: Record<string, unknown> = {
+     model: request.model,
+     messages: request.messages,
+     temperature: request.temperature ?? 0.7,
+     max_tokens: request.max_tokens ?? 16384, // Increased from 4000 to prevent mid-task stops
+     stream: request.stream ?? false,
+     top_p: request.top_p ?? 1,
+     frequency_penalty: request.frequency_penalty ?? 0,
+     presence_penalty: request.presence_penalty ?? 0,
+     stop: request.stop,
+     user: request.user,
+     n: request.n ?? 1,
+   };
 
   if (request.tools && request.tools.length > 0) {
     body.tools = request.tools;
