@@ -24,7 +24,39 @@ const chatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
   content: z.string(),
   name: z.string().optional(),
+  tool_call_id: z.string().optional(),
 });
+
+const toolCallSchema = z.object({
+  id: z.string(),
+  type: z.literal('function'),
+  function: z.object({
+    name: z.string(),
+    arguments: z.string(),
+  }),
+});
+
+const toolDefinitionSchema = z.object({
+  type: z.literal('function'),
+  function: z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    parameters: z.record(z.unknown()).optional(),
+    strict: z.boolean().optional(),
+  }),
+});
+
+const toolChoiceSchema = z.union([
+  z.literal('none'),
+  z.literal('auto'),
+  z.literal('required'),
+  z.object({
+    type: z.literal('function'),
+    function: z.object({
+      name: z.string(),
+    }),
+  }),
+]);
 
 const chatCompletionRequestSchema = z.object({
   model: z.string().optional(),
@@ -38,6 +70,8 @@ const chatCompletionRequestSchema = z.object({
   stop: z.union([z.string(), z.array(z.string())]).optional(),
   user: z.string().optional(),
   n: z.number().positive().optional(),
+  tools: z.array(toolDefinitionSchema).optional(),
+  tool_choice: toolChoiceSchema.optional(),
 });
 
 // ============================================================================

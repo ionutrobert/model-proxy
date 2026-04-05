@@ -6,7 +6,29 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   name?: string;
+  tool_call_id?: string;
 }
+
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
+export type ToolChoice = 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface ChatCompletionRequest {
   model?: string;
@@ -20,6 +42,8 @@ export interface ChatCompletionRequest {
   stop?: string | string[];
   user?: string;
   n?: number;
+  tools?: ToolDefinition[];
+  tool_choice?: ToolChoice;
 }
 
 export interface ChatCompletionResponse {
@@ -29,7 +53,9 @@ export interface ChatCompletionResponse {
   model: string;
   choices: {
     index: number;
-    message: ChatMessage;
+    message: ChatMessage & {
+      tool_calls?: ToolCall[];
+    };
     finish_reason: string | null;
     logprobs?: unknown;
   }[];

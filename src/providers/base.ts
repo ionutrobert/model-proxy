@@ -1,13 +1,14 @@
 import {
-  ProviderConfig,
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  ChatCompletionChunk,
-  StreamHandler,
-  StreamCompleteHandler,
-  StreamErrorHandler,
+ ProviderConfig,
+ ChatCompletionRequest,
+ ChatCompletionResponse,
+ ChatCompletionChunk,
+ StreamHandler,
+ StreamCompleteHandler,
+ StreamErrorHandler,
+ ToolCall,
 } from '../core/types.js';
-import { KeyPool, KeyPoolManager } from '../core/key-pool.js';
+ import { KeyPool, KeyPoolManager } from '../core/key-pool.js';
 
 export interface RequestResult {
   response: Response;
@@ -166,93 +167,101 @@ export abstract class BaseProvider {
     throw lastError || new AllKeysRateLimitedError(this.config.id);
   }
 
-  /**
-   * Format response to OpenAI-compatible format
-   */
-  protected formatResponse(data: unknown, model: string): ChatCompletionResponse {
-    const response = data as Record<string, unknown>;
-    const choicesData = (response.choices || []) as unknown[];
+/**
+ * Format response to OpenAI-compatible format
+ */
+ protected formatResponse(data: unknown, model: string): ChatCompletionResponse {
+ const response = data as Record<string, unknown>;
+ const choicesData = (response.choices || []) as unknown[];
 
-    const mappedChoices = choicesData.map((choice: unknown, index: number) => {
-      const choiceObj = choice as Record<string, unknown>;
-      const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
-      
-      // Some models (like Kimi) return content in 'reasoning' field when it's null
-      let content = messageObj.content;
-      if (content === null || content === undefined) {
-        content = messageObj.reasoning || '';
-      }
-      
-      return {
-        index,
-        message: {
-          role: 'assistant' as const,
-          content: String(content),
-        },
-        finish_reason: (choiceObj.finish_reason as string) || 'stop',
-        logprobs: choiceObj.logprobs,
-      };
-    });
+ const mappedChoices = choicesData.map((choice: unknown, index: number) => {
+ const choiceObj = choice as Record<string, unknown>;
+ const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
 
-    const usageData = (response.usage || {}) as Record<string, number>;
+ // Some models (like Kimi) return content in 'reasoning' field when it's null
+ let content = messageObj.content;
+ if (content === null || content === undefined) {
+ content = messageObj.reasoning || '';
+ }
 
-    return {
-      id: (response.id as string) || `chatcmpl-${Date.now()}`,
-      object: 'chat.completion',
-      created: (response.created as number) || Math.floor(Date.now() / 1000),
-      model: model,
-      choices: mappedChoices,
-      usage: {
-        prompt_tokens: usageData.prompt_tokens || 0,
-        completion_tokens: usageData.completion_tokens || 0,
-        total_tokens: usageData.total_tokens || 0,
-      },
-    };
-  }
+ const message: ChatCompletionResponse['choices'][0]['message'] = {
+ role: 'assistant' as const,
+ content: String(content),
+ };
 
-  /**
-   * Parse SSE stream chunk
-   */
-  protected parseStreamChunk(line: string): ChatCompletionChunk | null {
-    if (!line.startsWith('data: ')) {
-      return null;
-    }
+ // Pass through tool_calls if present
+ if (messageObj.tool_calls) {
+ message.tool_calls = messageObj.tool_calls as ToolCall[];
+ }
 
-    const data = line.slice(6).trim();
+ return {
+ index,
+ message,
+ finish_reason: (choiceObj.finish_reason as string) || 'stop',
+ logprobs: choiceObj.logprobs,
+ };
+ });
 
-    if (data === '[DONE]') {
-      return null;
-    }
+ const usageData = (response.usage || {}) as Record<string, number>;
 
-    try {
-      const parsed = JSON.parse(data);
-      const choices = parsed.choices || [];
-      
-      // Handle reasoning models that use 'reasoning' field in delta
-      const mappedChoices = choices.map((choice: any) => {
-        const delta = choice.delta || {};
-        // If content is null/empty but reasoning exists, use reasoning
-        if (!delta.content && (delta.reasoning || delta.reasoning_content)) {
-          delta.content = delta.reasoning || delta.reasoning_content;
-        }
-        return {
-          index: choice.index || 0,
-          delta: delta,
-          finish_reason: choice.finish_reason || null,
-        };
-      });
-      
-      return {
-        id: parsed.id || `chatcmpl-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: parsed.created || Math.floor(Date.now() / 1000),
-        model: parsed.model || 'unknown',
-        choices: mappedChoices,
-      };
-    } catch {
-      return null;
-    }
-  }
+ return {
+ id: (response.id as string) || `chatcmpl-${Date.now()}`,
+ object: 'chat.completion',
+ created: (response.created as number) || Math.floor(Date.now() / 1000),
+ model: model,
+ choices: mappedChoices,
+ usage: {
+ prompt_tokens: usageData.prompt_tokens || 0,
+ completion_tokens: usageData.completion_tokens || 0,
+ total_tokens: usageData.total_tokens || 0,
+ },
+ };
+ }
+
+/**
+ * Parse SSE stream chunk
+ */
+ protected parseStreamChunk(line: string): ChatCompletionChunk | null {
+ if (!line.startsWith('data: ')) {
+ return null;
+ }
+
+ const data = line.slice(6).trim();
+
+ if (data === '[DONE]') {
+ return null;
+ }
+
+ try {
+ const parsed = JSON.parse(data);
+ const choices = parsed.choices || [];
+
+ const mappedChoices = choices.map((choice: any) => {
+ const delta = choice.delta || {};
+ 
+ // If content is null/empty but reasoning exists, use reasoning
+ if (!delta.content && (delta.reasoning || delta.reasoning_content)) {
+ delta.content = delta.reasoning || delta.reasoning_content;
+ }
+ 
+ return {
+ index: choice.index || 0,
+ delta: delta,
+ finish_reason: choice.finish_reason || null,
+ };
+ });
+
+ return {
+ id: parsed.id || `chatcmpl-${Date.now()}`,
+ object: 'chat.completion.chunk',
+ created: parsed.created || Math.floor(Date.now() / 1000),
+ model: parsed.model || 'unknown',
+ choices: mappedChoices,
+ };
+ } catch {
+ return null;
+ }
+ }
 
   /**
    * Read stream response
@@ -336,22 +345,32 @@ export abstract class BaseProvider {
     return new Error(message);
   }
 
-  /**
-   * Build request body for provider
-   */
-  protected buildRequestBody(request: ChatCompletionRequest): unknown {
-    return {
-      model: request.model,
-      messages: request.messages,
-      temperature: request.temperature ?? 0.7,
-      max_tokens: request.max_tokens ?? 4000,
-      stream: request.stream ?? false,
-      top_p: request.top_p ?? 1,
-      frequency_penalty: request.frequency_penalty ?? 0,
-      presence_penalty: request.presence_penalty ?? 0,
-      stop: request.stop,
-      user: request.user,
-      n: request.n ?? 1,
-    };
+/**
+ * Build request body for provider
+ */
+ protected buildRequestBody(request: ChatCompletionRequest): unknown {
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: request.messages,
+    temperature: request.temperature ?? 0.7,
+    max_tokens: request.max_tokens ?? 4000,
+    stream: request.stream ?? false,
+    top_p: request.top_p ?? 1,
+    frequency_penalty: request.frequency_penalty ?? 0,
+    presence_penalty: request.presence_penalty ?? 0,
+    stop: request.stop,
+    user: request.user,
+    n: request.n ?? 1,
+  };
+
+  if (request.tools && request.tools.length > 0) {
+    body.tools = request.tools;
   }
+
+  if (request.tool_choice) {
+    body.tool_choice = request.tool_choice;
+  }
+
+  return body;
+}
 }
