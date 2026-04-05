@@ -170,37 +170,52 @@ export abstract class BaseProvider {
 /**
  * Format response to OpenAI-compatible format
  */
- protected formatResponse(data: unknown, model: string): ChatCompletionResponse {
- const response = data as Record<string, unknown>;
- const choicesData = (response.choices || []) as unknown[];
+  protected formatResponse(data: unknown, model: string): ChatCompletionResponse {
+  const response = data as Record<string, unknown>;
+  const choicesData = (response.choices || []) as unknown[];
 
- const mappedChoices = choicesData.map((choice: unknown, index: number) => {
- const choiceObj = choice as Record<string, unknown>;
- const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
+  const mappedChoices = choicesData.map((choice: unknown, index: number) => {
+  const choiceObj = choice as Record<string, unknown>;
+  const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
 
- // Some models (like Kimi) return content in 'reasoning' field when it's null
- let content = messageObj.content;
- if (content === null || content === undefined) {
- content = messageObj.reasoning || '';
- }
+  // Check if tool_calls present - content MUST be null when tool_calls exist
+  const hasToolCalls = messageObj.tool_calls && Array.isArray(messageObj.tool_calls) && messageObj.tool_calls.length > 0;
+  
+  let content: string | null;
+  if (hasToolCalls) {
+  // Tool calls present - content MUST be null per OpenAI spec
+  content = null;
+  } else {
+  // No tool calls - handle content normally
+  const rawContent = messageObj.content;
+  if (rawContent === null || rawContent === undefined) {
+  // Some models (like Kimi) return content in 'reasoning' field
+  content = (messageObj.reasoning as string) || '';
+  } else {
+  content = rawContent as string;
+  }
+  }
 
- const message: ChatCompletionResponse['choices'][0]['message'] = {
- role: 'assistant' as const,
- content: String(content),
- };
+  const message: ChatCompletionResponse['choices'][0]['message'] = {
+  role: 'assistant' as const,
+  content,
+  };
 
- // Pass through tool_calls if present
- if (messageObj.tool_calls) {
- message.tool_calls = messageObj.tool_calls as ToolCall[];
- }
+  // Pass through tool_calls if present
+  if (messageObj.tool_calls) {
+  message.tool_calls = messageObj.tool_calls as ToolCall[];
+  }
 
- return {
- index,
- message,
- finish_reason: (choiceObj.finish_reason as string) || 'stop',
- logprobs: choiceObj.logprobs,
- };
- });
+  // Preserve finish_reason from upstream - critical for "tool_calls"
+  const finishReason = choiceObj.finish_reason as string | undefined;
+  
+  return {
+  index,
+  message,
+  finish_reason: finishReason || 'stop',
+  logprobs: choiceObj.logprobs,
+  };
+  });
 
  const usageData = (response.usage || {}) as Record<string, number>;
 
@@ -236,20 +251,23 @@ export abstract class BaseProvider {
  const parsed = JSON.parse(data);
  const choices = parsed.choices || [];
 
- const mappedChoices = choices.map((choice: any) => {
- const delta = choice.delta || {};
- 
- // If content is null/empty but reasoning exists, use reasoning
- if (!delta.content && (delta.reasoning || delta.reasoning_content)) {
- delta.content = delta.reasoning || delta.reasoning_content;
- }
- 
- return {
- index: choice.index || 0,
- delta: delta,
- finish_reason: choice.finish_reason || null,
- };
- });
+const mappedChoices = choices.map((choice: any) => {
+  const delta = choice.delta || {};
+  
+  // Check if tool_calls present in delta
+  const hasToolCalls = delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+  
+  // If content is null/empty but reasoning exists, use reasoning (but not when tool_calls present)
+  if (!hasToolCalls && !delta.content && (delta.reasoning || delta.reasoning_content)) {
+  delta.content = delta.reasoning || delta.reasoning_content;
+  }
+  
+  return {
+  index: choice.index || 0,
+  delta: delta,
+  finish_reason: choice.finish_reason || null,
+  };
+  });
 
  return {
  id: parsed.id || `chatcmpl-${Date.now()}`,
