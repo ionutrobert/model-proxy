@@ -1,10 +1,11 @@
-import { 
-  ProviderConfig, 
-  ProviderId, 
+import {
+  ProviderConfig,
+  ProviderId,
   ProviderPreference,
   ModelConfig,
   UserPreferences,
 } from './types.js';
+import { KeyPoolManager } from './key-pool.js';
 
 // ============================================================================
 // Provider Definitions
@@ -363,20 +364,24 @@ export class ProviderRegistry {
     const providers: ProviderConfig[] = [];
 
     for (const [id, definition] of Object.entries(PROVIDER_DEFINITIONS)) {
-      // Skip if provider is disabled
       if (preferences.disabledProviders.includes(id)) {
         continue;
       }
 
-      const apiKey = process.env[definition.apiKeyEnvVar];
-      if (apiKey) {
+      const keyPool = KeyPoolManager.discoverFromEnv(
+        definition.id as ProviderId,
+        definition.apiKeyEnvVar
+      );
+
+      if (keyPool) {
         const preference = this.getProviderPreference(id, preferences);
         if (preference !== 'disabled') {
           providers.push({
             id: definition.id,
             name: definition.name,
             baseUrl: definition.baseUrl,
-            apiKey,
+            apiKey: keyPool.keys[0]?.key || '',
+            keyPool,
             timeout: definition.defaultTimeout,
             healthCheckTimeout: definition.defaultHealthCheckTimeout,
             preference,
@@ -386,18 +391,22 @@ export class ProviderRegistry {
       }
     }
 
-    // Include custom providers
     for (const [id, definition] of this.customProviders) {
       if (!preferences.disabledProviders.includes(id)) {
-        const apiKey = process.env[definition.apiKeyEnvVar];
-        if (apiKey) {
+        const keyPool = KeyPoolManager.discoverFromEnv(
+          definition.id as ProviderId,
+          definition.apiKeyEnvVar
+        );
+
+        if (keyPool) {
           const preference = this.getProviderPreference(id, preferences);
           if (preference !== 'disabled') {
             providers.push({
               id: definition.id,
               name: definition.name,
               baseUrl: definition.baseUrl,
-              apiKey,
+              apiKey: keyPool.keys[0]?.key || '',
+              keyPool,
               timeout: definition.defaultTimeout,
               healthCheckTimeout: definition.defaultHealthCheckTimeout,
               preference,
@@ -420,17 +429,23 @@ export class ProviderRegistry {
     preference: ProviderPreference
   ): ProviderConfig | null {
     const definition = PROVIDER_DEFINITIONS[providerId] || this.customProviders.get(providerId);
-    
+
     if (!definition) {
       console.warn(`Unknown provider: ${providerId}`);
       return null;
     }
 
+    const keyPool = KeyPoolManager.discoverFromEnv(
+      providerId,
+      definition.apiKeyEnvVar
+    );
+
     return {
       id: definition.id,
       name: definition.name,
       baseUrl: definition.baseUrl,
-      apiKey,
+      apiKey: keyPool?.keys[0]?.key || apiKey,
+      keyPool: keyPool || undefined,
       timeout: definition.defaultTimeout,
       healthCheckTimeout: definition.defaultHealthCheckTimeout,
       preference,

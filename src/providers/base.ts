@@ -1,12 +1,25 @@
-import { 
-  ProviderConfig, 
-  ChatCompletionRequest, 
-  ChatCompletionResponse, 
+import {
+  ProviderConfig,
+  ChatCompletionRequest,
+  ChatCompletionResponse,
   ChatCompletionChunk,
   StreamHandler,
   StreamCompleteHandler,
   StreamErrorHandler,
 } from '../core/types.js';
+import { KeyPool, KeyPoolManager } from '../core/key-pool.js';
+
+export interface RequestResult {
+  response: Response;
+  keyUsed: string;
+}
+
+export class AllKeysRateLimitedError extends Error {
+  constructor(providerId: string) {
+    super(`All API keys for ${providerId} are rate limited`);
+    this.name = 'AllKeysRateLimitedError';
+  }
+}
 
 // ============================================================================
 // Base Provider Class
@@ -44,11 +57,44 @@ export abstract class BaseProvider {
     return this.config.preference;
   }
 
+  protected getKeyPool(): KeyPool | undefined {
+    return this.config.keyPool;
+  }
+
+  protected getCurrentKey(): string {
+    const pool = this.getKeyPool();
+    if (pool) {
+      const key = KeyPoolManager.getNextKey(pool);
+      if (key) return key;
+    }
+    return this.config.apiKey;
+  }
+
+  protected hasAvailableKey(): boolean {
+    const pool = this.getKeyPool();
+    if (!pool) return !!this.config.apiKey;
+    return KeyPoolManager.hasAvailableKey(pool);
+  }
+
+  protected markKeyRateLimited(key: string, retryAfterSeconds?: number): void {
+    const pool = this.getKeyPool();
+    if (pool) {
+      KeyPoolManager.markRateLimited(pool, key, retryAfterSeconds);
+    }
+  }
+
+  protected markKeySuccess(key: string): void {
+    const pool = this.getKeyPool();
+    if (pool) {
+      KeyPoolManager.markSuccess(pool, key);
+    }
+  }
+
   /**
    * Execute a chat completion request
    */
   abstract execute(request: ChatCompletionRequest): Promise<ChatCompletionResponse>;
-  
+
   /**
    * Execute a streaming chat completion request
    */
@@ -60,33 +106,64 @@ export abstract class BaseProvider {
   ): Promise<void>;
 
   /**
-   * Make an HTTP request to the provider
+   * Make an HTTP request to the provider with automatic key rotation
    */
   protected async makeRequest(
     endpoint: string,
     body: unknown,
     stream: boolean = false
   ): Promise<Response> {
-    const url = `${this.config.baseUrl}${endpoint}`;
+    const pool = this.getKeyPool();
     
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.config.apiKey}`,
-      ...this.config.headers,
-    };
-
-    if (stream) {
-      headers['Accept'] = 'text/event-stream';
+    if (pool && !this.hasAvailableKey()) {
+      throw new AllKeysRateLimitedError(this.config.id);
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: this.config.timeout > 0 ? AbortSignal.timeout(this.config.timeout) : undefined,
-    });
+    const maxRetries = pool ? pool.keys.length : 1;
+    let lastError: Error | null = null;
 
-    return response;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const key = this.getCurrentKey();
+      const url = `${this.config.baseUrl}${endpoint}`;
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+        ...this.config.headers,
+      };
+
+      if (stream) {
+        headers['Accept'] = 'text/event-stream';
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: this.config.timeout > 0 ? AbortSignal.timeout(this.config.timeout) : undefined,
+      });
+
+      if (response.status === 429 && pool) {
+        const retryAfter = response.headers.get('Retry-After');
+        const retrySeconds = retryAfter ? parseInt(retryAfter, 10) : 60;
+        this.markKeyRateLimited(key, retrySeconds);
+        
+        if (this.hasAvailableKey()) {
+          console.log(`[KEY-ROTATION] ${this.config.id}: key rate limited, trying next key`);
+          continue;
+        }
+        
+        throw new AllKeysRateLimitedError(this.config.id);
+      }
+
+      if (response.ok && pool) {
+        this.markKeySuccess(key);
+      }
+
+      return response;
+    }
+
+    throw lastError || new AllKeysRateLimitedError(this.config.id);
   }
 
   /**

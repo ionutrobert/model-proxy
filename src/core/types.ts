@@ -71,11 +71,14 @@ export type ProviderId =
 
 export type ProviderPreference = 'primary' | 'secondary' | 'fallback' | 'disabled';
 
+import { KeyPool } from './key-pool.js';
+
 export interface ProviderConfig {
   id: ProviderId;
   name: string;
   baseUrl: string;
   apiKey: string;
+  keyPool?: KeyPool;
   headers?: Record<string, string>;
   timeout: number;
   healthCheckTimeout: number;
