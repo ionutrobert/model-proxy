@@ -387,7 +387,6 @@ const mappedChoices = choices.map((choice: any) => {
      model: request.model,
      messages: request.messages,
      temperature: request.temperature ?? 0.7,
-     max_tokens: request.max_tokens ?? 16384, // Increased from 4000 to prevent mid-task stops
      stream: request.stream ?? false,
      top_p: request.top_p ?? 1,
      frequency_penalty: request.frequency_penalty ?? 0,
@@ -396,6 +395,12 @@ const mappedChoices = choices.map((choice: any) => {
      user: request.user,
      n: request.n ?? 1,
    };
+
+  // Only set max_tokens if client explicitly requested it
+  // Don't hardcode - let upstream provider use its own default
+  if (request.max_tokens !== undefined) {
+    body.max_tokens = request.max_tokens;
+  }
 
   if (request.tools && request.tools.length > 0) {
     body.tools = request.tools;
