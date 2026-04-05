@@ -22,7 +22,7 @@ import { circuitBreaker } from '../core/circuit-breaker.js';
 
 const chatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.string(),
+  content: z.string().nullable(), // Allow null for tool calling
   name: z.string().optional(),
   tool_call_id: z.string().optional(),
 });
