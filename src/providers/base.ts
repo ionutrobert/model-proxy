@@ -174,13 +174,13 @@ export abstract class BaseProvider {
   const response = data as Record<string, unknown>;
   const choicesData = (response.choices || []) as unknown[];
 
-  const mappedChoices = choicesData.map((choice: unknown, index: number) => {
+const mappedChoices = choicesData.map((choice: unknown, index: number) => {
   const choiceObj = choice as Record<string, unknown>;
   const messageObj = (choiceObj.message || {}) as Record<string, unknown>;
 
   // Check if tool_calls present - content MUST be null when tool_calls exist
   const hasToolCalls = messageObj.tool_calls && Array.isArray(messageObj.tool_calls) && messageObj.tool_calls.length > 0;
-  
+
   let content: string | null;
   if (hasToolCalls) {
   // Tool calls present - content MUST be null per OpenAI spec
@@ -189,8 +189,8 @@ export abstract class BaseProvider {
   // No tool calls - handle content normally
   const rawContent = messageObj.content;
   if (rawContent === null || rawContent === undefined) {
-  // Some models (like Kimi) return content in 'reasoning' field
-  content = (messageObj.reasoning as string) || '';
+  // Don't use reasoning as content - they are separate streams
+  content = '';
   } else {
   content = rawContent as string;
   }
@@ -206,9 +206,14 @@ export abstract class BaseProvider {
   message.tool_calls = messageObj.tool_calls as ToolCall[];
   }
 
+  // Pass through reasoning_content if present (for thinking models)
+  if (messageObj.reasoning_content) {
+  (message as any).reasoning_content = messageObj.reasoning_content;
+  }
+
   // Preserve finish_reason from upstream - critical for "tool_calls"
   const finishReason = choiceObj.finish_reason as string | undefined;
-  
+
   return {
   index,
   message,
@@ -269,12 +274,9 @@ const mappedChoices = choices.map((choice: any) => {
   // Check if tool_calls present in delta
   const hasToolCalls = delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
   
-  // If content is null/empty but reasoning exists, use reasoning (but not when tool_calls present)
-  if (!hasToolCalls && !delta.content && (delta.reasoning || delta.reasoning_content)) {
-  // Use reasoning as content, but also preserve it in case client expects it
-  delta.content = delta.reasoning || delta.reasoning_content;
-  // Don't delete reasoning - some clients may use it
-  }
+  // DON'T merge reasoning_content into content - they are separate streams
+  // reasoning_content is internal thinking, content is the actual response
+  // Let the client decide how to display them
   
   return {
   index: choice.index || 0,
