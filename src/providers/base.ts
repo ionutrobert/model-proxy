@@ -247,9 +247,21 @@ export abstract class BaseProvider {
  return null;
  }
 
- try {
- const parsed = JSON.parse(data);
- const choices = parsed.choices || [];
+try {
+  const parsed = JSON.parse(data);
+  
+  // Debug logging for reasoning/content
+  if (process.env.DEBUG_STREAMING === 'true') {
+  const choices = parsed.choices || [];
+  choices.forEach((choice: any, idx: number) => {
+  const delta = choice.delta || {};
+  if (delta.content || delta.reasoning || delta.reasoning_content) {
+  console.log(`[STREAM DEBUG] Chunk ${idx}: content=${JSON.stringify(delta.content)}, reasoning=${JSON.stringify(delta.reasoning)}, reasoning_content=${JSON.stringify(delta.reasoning_content)}`);
+  }
+  });
+  }
+  
+  const choices = parsed.choices || [];
 
 const mappedChoices = choices.map((choice: any) => {
   const delta = choice.delta || {};
@@ -259,7 +271,9 @@ const mappedChoices = choices.map((choice: any) => {
   
   // If content is null/empty but reasoning exists, use reasoning (but not when tool_calls present)
   if (!hasToolCalls && !delta.content && (delta.reasoning || delta.reasoning_content)) {
+  // Use reasoning as content, but also preserve it in case client expects it
   delta.content = delta.reasoning || delta.reasoning_content;
+  // Don't delete reasoning - some clients may use it
   }
   
   return {
