@@ -44,7 +44,7 @@ export interface AutoModeSelection {
 export const AUTO_MODE_CONFIGS: Record<AutoMode, AutoModeConfig> = {
   'auto-coding': {
     minTier: 'A',
-    minContextWindow: 80000,
+    minContextWindow: 100000,
     preferThinking: true,
     minStability: 50,
     task: 'coding',

@@ -120,6 +120,7 @@ export interface ModelConfig {
   name: string;
   tier: ModelTier;
   contextWindow: number;
+  maxOutputTokens?: number;
   supportsStreaming: boolean;
   supportsFunctionCalling?: boolean;
   supportsVision?: boolean;

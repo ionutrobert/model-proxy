@@ -107,33 +107,37 @@ export class DynamicHealthService {
     return { healthResults, allModels };
   }
 
-  private convertDiscoveredModels(discovered: DiscoveredModel[], provider: ProviderConfig): ModelConfig[] {
-    return discovered.map(dm => {
-      const contextWindow = dm.context_window || modelDiscovery.inferContextWindow(dm.id);
-      const capabilities = modelDiscovery.inferCapabilities(dm.id);
-      const tier = modelDiscovery.estimateTier(dm.id);
+ private convertDiscoveredModels(discovered: DiscoveredModel[], provider: ProviderConfig): ModelConfig[] {
+ return discovered.map(dm => {
+ const contextWindow = dm.context_window || modelDiscovery.inferContextWindow(dm.id);
+ const capabilities = modelDiscovery.inferCapabilities(dm.id);
+ const tier = modelDiscovery.estimateTier(dm.id);
 
-      const model: ModelConfig = {
-        id: dm.id,
-        provider: provider.id,
-        name: dm.name || dm.id,
-        tier,
-        contextWindow,
-        supportsStreaming: dm.supports_streaming ?? capabilities.streaming,
-        supportsFunctionCalling: dm.supports_function_calling ?? capabilities.functionCalling,
-        supportsVision: dm.supports_vision ?? capabilities.vision,
-      };
+ const model: ModelConfig = {
+ id: dm.id,
+ provider: provider.id,
+ name: dm.name || dm.id,
+ tier,
+ contextWindow,
+ supportsStreaming: dm.supports_streaming ?? capabilities.streaming,
+ supportsFunctionCalling: dm.supports_function_calling ?? capabilities.functionCalling,
+ supportsVision: dm.supports_vision ?? capabilities.vision,
+ };
 
-      if (dm.pricing?.prompt && dm.pricing?.completion) {
-        model.costPer1kTokens = {
-          input: dm.pricing.prompt,
-          output: dm.pricing.completion,
-        };
-      }
+ if (dm.max_output_tokens !== undefined) {
+      model.maxOutputTokens = dm.max_output_tokens;
+    }
 
-      return model;
-    });
-  }
+ if (dm.pricing?.prompt && dm.pricing?.completion) {
+ model.costPer1kTokens = {
+ input: dm.pricing.prompt,
+ output: dm.pricing.completion,
+ };
+ }
+
+ return model;
+ });
+ }
 
   private prioritizeModelsForCheck(models: ModelConfig[]): ModelConfig[] {
     const priorityOrder = [
@@ -170,16 +174,16 @@ export class DynamicHealthService {
     ];
 
     const commonModels = [
-      { id: 'llama-3.1-70b-instruct', context: 128000 },
-      { id: 'llama-3.1-8b-instruct', context: 128000 },
-      { id: 'llama-3.1-405b-instruct', context: 128000 },
-      { id: 'nvidia/llama-3.1-nemotron-70b-instruct', context: 128000 },
-      { id: 'meta/llama-3.1-70b-instruct', context: 128000 },
-      { id: 'meta/llama-3.1-8b-instruct', context: 128000 },
-      { id: 'meta/llama-3.1-405b-instruct', context: 128000 },
-      { id: 'mistral-7b-instruct', context: 32768 },
-      { id: 'mixtral-8x7b-instruct', context: 32768 },
-      { id: 'mixtral-8x22b-instruct', context: 65536 },
+      { id: 'llama-3.1-70b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'llama-3.1-8b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'llama-3.1-405b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'nvidia/llama-3.1-nemotron-70b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'meta/llama-3.1-70b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'meta/llama-3.1-8b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'meta/llama-3.1-405b-instruct', context: 128000, maxOutput: 8192 },
+      { id: 'mistral-7b-instruct', context: 32768, maxOutput: 8192 },
+      { id: 'mixtral-8x7b-instruct', context: 32768, maxOutput: 8192 },
+      { id: 'mixtral-8x22b-instruct', context: 65536, maxOutput: 8192 },
     ];
 
     for (const model of commonModels) {
@@ -189,6 +193,7 @@ export class DynamicHealthService {
         name: model.id,
         tier: modelDiscovery.estimateTier(model.id),
         contextWindow: model.context,
+        maxOutputTokens: model.maxOutput,
         supportsStreaming: true,
         supportsFunctionCalling: true,
       });
