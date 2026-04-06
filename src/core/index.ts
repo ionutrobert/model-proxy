@@ -56,6 +56,22 @@ export {
   smartModelSelector,
 } from './smart-selector.js';
 
+// Verification Orchestrator
+export {
+  VerificationOrchestrator,
+  DEFAULT_LOOP_CONFIG,
+} from './verification-orchestrator.js';
+
+export {
+  injectVerificationPrompt,
+  removeTriggerPhrase,
+} from './prompt-injector.js';
+
+export {
+  detectCompletion,
+  extractContentBeforeMarker,
+} from './completion-detector.js';
+
 // ============================================================================
 // Main Model Proxy Class
 // ============================================================================
@@ -77,6 +93,7 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
+import { VerificationOrchestrator } from './verification-orchestrator.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -171,6 +188,20 @@ export class ModelProxyCore {
 
     if (this.rankedModels.length === 0) {
       throw new Error('No healthy models available. Check your API keys and network.');
+    }
+
+    // Check for #loop trigger to enable verification
+    const orchestrator = new VerificationOrchestrator();
+    if (orchestrator.shouldEnableLoop(request.messages)) {
+      console.log('🔁 Verification loop enabled (#loop detected)');
+      return orchestrator.executeWithVerification(
+        request,
+        async (req) => {
+          // Use fallback chain for execution
+          const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
+          return this.executeWithFallback(req, fallbackChain);
+        }
+      );
     }
 
     // Direct model execution when specific model is requested
