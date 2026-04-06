@@ -268,24 +268,22 @@ try {
   
   const choices = parsed.choices || [];
 
-      const mappedChoices = choices.map((choice: any) => {
-        const delta = choice.delta || {};
-
-        // Check if tool_calls present in delta
-        const hasToolCalls = delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
-
-        // Filter delta to only include content and tool_calls
-        // Remove reasoning_content to prevent it from showing in the response
-        const filteredDelta: Record<string, any> = {};
-        if (delta.content !== undefined) filteredDelta.content = delta.content;
-        if (hasToolCalls) filteredDelta.tool_calls = delta.tool_calls;
-
-        return {
-          index: choice.index || 0,
-          delta: filteredDelta,
-          finish_reason: choice.finish_reason || null,
-        };
-      });
+const mappedChoices = choices.map((choice: any) => {
+  const delta = choice.delta || {};
+  
+  // Check if tool_calls present in delta
+  const hasToolCalls = delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+  
+  // DON'T merge reasoning_content into content - they are separate streams
+  // reasoning_content is internal thinking, content is the actual response
+  // Let the client decide how to display them
+  
+  return {
+  index: choice.index || 0,
+  delta: delta,
+  finish_reason: choice.finish_reason || null,
+  };
+  });
 
  return {
  id: parsed.id || `chatcmpl-${Date.now()}`,
