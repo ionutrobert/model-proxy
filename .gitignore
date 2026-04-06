@@ -37,3 +37,4 @@ temp/
 
 # Build artifacts
 *.tgz
+src/__tests__/integration/
