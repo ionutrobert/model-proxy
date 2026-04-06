@@ -20,7 +20,7 @@ export interface LoopConfig {
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  enabled: process.env.ENABLE_VERIFICATION_LOOP === 'true',
+  enabled: process.env.ENABLE_VERIFICATION_LOOP !== 'false', // Enabled by default
   maxIterations: parseInt(process.env.LOOP_MAX_ITERATIONS || '3', 10),
   completionMarker: process.env.LOOP_COMPLETION_MARKER || '[TASK_DONE]',
   triggerPhrase: '#loop',
