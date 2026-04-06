@@ -344,3 +344,151 @@ export type StreamChunk = {
 export type StreamHandler = (chunk: StreamChunk) => void;
 export type StreamCompleteHandler = () => void;
 export type StreamErrorHandler = (error: Error) => void;
+
+// ============================================================================
+// Embeddings API types
+// ============================================================================
+
+export interface EmbeddingRequest {
+  model: string;
+  input: string | string[] | number[] | number[][];
+  dimensions?: number;
+  encoding_format?: 'float' | 'base64';
+  user?: string;
+}
+
+export interface EmbeddingResponse {
+  object: 'list';
+  data: Array<{
+    object: 'embedding';
+    embedding: number[] | string;
+    index: number;
+  }>;
+  model: string;
+  usage: {
+    prompt_tokens: number;
+    total_tokens: number;
+  };
+}
+
+// ============================================================================
+// Legacy Completions API types
+// ============================================================================
+
+export interface CompletionRequest {
+  model: string;
+  prompt: string | string[] | number[] | number[][];
+  max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  n?: number;
+  stream?: boolean;
+  logprobs?: number;
+  echo?: boolean;
+  stop?: string | string[];
+  presence_penalty?: number;
+  frequency_penalty?: number;
+  best_of?: number;
+  logit_bias?: Record<string, number>;
+  user?: string;
+}
+
+export interface CompletionResponse {
+  id: string;
+  object: 'text_completion';
+  created: number;
+  model: string;
+  choices: Array<{
+    text: string;
+    index: number;
+    logprobs?: {
+      tokens?: string[];
+      token_logprobs?: number[];
+      top_logprobs?: Array<Record<string, number>>;
+      text_offset?: number[];
+    } | null;
+    finish_reason: 'stop' | 'length' | 'content_filter' | null;
+  }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export interface CompletionChunk {
+  id: string;
+  object: 'text_completion';
+  created: number;
+  model: string;
+  choices: Array<{
+    text: string;
+    index: number;
+    logprobs?: {
+      tokens?: string[];
+      token_logprobs?: number[];
+      top_logprobs?: Array<Record<string, number>>;
+      text_offset?: number[];
+    } | null;
+    finish_reason: 'stop' | 'length' | 'content_filter' | null;
+  }>;
+}
+
+// ============================================================================
+// Responses API types
+// ============================================================================
+
+export interface ResponseRequest {
+  model: string;
+  input: string | Array<{
+    type: 'message';
+    role: 'system' | 'user' | 'assistant';
+    content: string | Array<{
+      type: 'text' | 'image';
+      text?: string;
+      image_url?: { url: string };
+    }>;
+  }>;
+  instructions?: string;
+  temperature?: number;
+  top_p?: number;
+  max_output_tokens?: number;
+  stream?: boolean;
+  tools?: ToolDefinition[];
+  tool_choice?: ToolChoice;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResponseOutput {
+  id: string;
+  type: 'message';
+  status: 'in_progress' | 'completed' | 'incomplete' | 'failed';
+  role: 'assistant';
+  content: Array<{
+    type: 'text' | 'refusal' | 'tool_use';
+    text?: string;
+    refusal?: string;
+    tool_use?: {
+      id: string;
+      type: 'function';
+      function: {
+        name: string;
+        arguments: string;
+      };
+    };
+  }>;
+}
+
+export interface ResponseAPIResponse {
+  id: string;
+  object: 'response';
+  created: number;
+  model: string;
+  output: ResponseOutput;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  metadata?: Record<string, unknown>;
+}

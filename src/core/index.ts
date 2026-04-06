@@ -407,6 +407,10 @@ export class ModelProxyCore {
     return this.rankedModels;
   }
 
+  getProvider(providerId: ProviderId): import('./types.js').ProviderConfig | undefined {
+    return this.config.providers.find(p => p.id === providerId);
+  }
+
   getHealthStatus(): { models: RankedModel[]; providers: import('./types.js').ProviderHealth[]; summary: { total: number; healthy: number; unhealthy: number }; } {
     const healthy = this.healthResults.filter(r => r.status === 'healthy').length;
     return {

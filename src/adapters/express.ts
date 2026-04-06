@@ -5,16 +5,24 @@
 import { Request, Response, NextFunction, Router } from 'express';
 import { z } from 'zod';
 import { ModelProxyCore } from '../core/index.js';
-import { 
+import {
   ChatCompletionRequest,
   ChatMessage,
   ModelProxyError,
   AuthenticationError,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  CompletionRequest,
+  CompletionResponse,
+  CompletionChunk,
+  ResponseRequest,
+  ResponseAPIResponse,
 } from '../core/types.js';
 import { autoModesHandler, AutoMode } from '../core/auto-modes.js';
 import { healthTracker } from '../core/health-tracker.js';
 import { proxyExecutor } from '../core/proxy-executor.js';
 import { circuitBreaker } from '../core/circuit-breaker.js';
+import { KeyPoolManager } from '../core/key-pool.js';
 
 // ============================================================================
 // Request Validation Schemas
@@ -537,6 +545,500 @@ function handleError(error: unknown, res: Response): void {
 }
 
 // ============================================================================
+// Embeddings Routes
+// ============================================================================
+
+export function createEmbeddingsRoutes(proxy: ModelProxyCore) {
+  const router = Router();
+
+  const embeddingRequestSchema = z.object({
+    model: z.string(),
+    input: z.union([
+      z.string(),
+      z.array(z.string()),
+      z.array(z.number()),
+      z.array(z.array(z.number())),
+    ]),
+    dimensions: z.number().positive().optional(),
+    encoding_format: z.enum(['float', 'base64']).optional().default('float'),
+    user: z.string().optional(),
+  });
+
+  router.post('/', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const validation = embeddingRequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        res.status(400).json({
+          error: {
+            message: `Invalid request: ${validation.error.errors.map(e => e.message).join(', ')}`,
+            type: 'invalid_request_error',
+            code: 'invalid_request',
+          },
+        });
+        return;
+      }
+
+      const request: EmbeddingRequest = validation.data;
+
+      const allModels = proxy.getAvailableModels();
+      const model = allModels.find(m => m.id === request.model);
+
+      if (!model) {
+        res.status(400).json({
+          error: {
+            message: `Model ${request.model} not found`,
+            type: 'invalid_request_error',
+            code: 'model_not_found',
+          },
+        });
+        return;
+      }
+
+      const provider = proxy.getProvider(model.provider);
+      if (!provider) {
+        res.status(503).json({
+          error: {
+            message: `Provider ${model.provider} unavailable`,
+            type: 'server_error',
+            code: 'provider_unavailable',
+          },
+        });
+        return;
+      }
+
+      const apiKey = (provider.keyPool ? KeyPoolManager.getNextKey(provider.keyPool) : null) || provider.apiKey;
+      const baseUrl = provider.baseUrl;
+
+      const response = await fetch(`${baseUrl}/v1/embeddings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          ...provider.headers,
+        },
+        body: JSON.stringify({
+          model: request.model,
+          input: request.input,
+          dimensions: request.dimensions,
+          encoding_format: request.encoding_format,
+          user: request.user,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error(`[EMBEDDINGS] Provider error: ${response.status} ${error}`);
+        res.status(response.status).json({
+          error: {
+            message: `Embedding generation failed: ${response.statusText}`,
+            type: 'server_error',
+            code: 'embedding_failed',
+          },
+        });
+        return;
+      }
+
+      const data = await response.json() as EmbeddingResponse;
+
+      const result: EmbeddingResponse = {
+        object: 'list',
+        data: data.data.map((item, index) => ({
+          object: 'embedding' as const,
+          embedding: item.embedding,
+          index,
+        })),
+        model: request.model,
+        usage: data.usage,
+      };
+
+      res.json(result);
+    } catch (error) {
+      handleError(error, res);
+    }
+  });
+
+  return router;
+}
+
+// ============================================================================
+// Legacy Completions Routes
+// ============================================================================
+
+export function createCompletionsRoutes(proxy: ModelProxyCore) {
+  const router = Router();
+
+  const completionRequestSchema = z.object({
+    model: z.string(),
+    prompt: z.union([
+      z.string(),
+      z.array(z.string()),
+      z.array(z.number()),
+      z.array(z.array(z.number())),
+    ]),
+    max_tokens: z.number().positive().optional(),
+    temperature: z.number().min(0).max(2).optional().default(1),
+    top_p: z.number().min(0).max(1).optional().default(1),
+    n: z.number().positive().optional().default(1),
+    stream: z.boolean().optional().default(false),
+    logprobs: z.number().min(0).max(5).optional(),
+    echo: z.boolean().optional().default(false),
+    stop: z.union([z.string(), z.array(z.string())]).optional(),
+    presence_penalty: z.number().min(-2).max(2).optional().default(0),
+    frequency_penalty: z.number().min(-2).max(2).optional().default(0),
+    best_of: z.number().positive().optional(),
+    logit_bias: z.record(z.number()).optional(),
+    user: z.string().optional(),
+  });
+
+  router.post('/', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const validation = completionRequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        res.status(400).json({
+          error: {
+            message: `Invalid request: ${validation.error.errors.map(e => e.message).join(', ')}`,
+            type: 'invalid_request_error',
+            code: 'invalid_request',
+          },
+        });
+        return;
+      }
+
+      const request: CompletionRequest = validation.data;
+
+      const allModels = proxy.getAvailableModels();
+      const model = allModels.find(m => m.id === request.model);
+
+      if (!model) {
+        res.status(400).json({
+          error: {
+            message: `Model ${request.model} not found`,
+            type: 'invalid_request_error',
+            code: 'model_not_found',
+          },
+        });
+        return;
+      }
+
+      const provider = proxy.getProvider(model.provider);
+      if (!provider) {
+        res.status(503).json({
+          error: {
+            message: `Provider ${model.provider} unavailable`,
+            type: 'server_error',
+            code: 'provider_unavailable',
+          },
+        });
+        return;
+      }
+
+      const apiKey = (provider.keyPool ? KeyPoolManager.getNextKey(provider.keyPool) : null) || provider.apiKey;
+      const baseUrl = provider.baseUrl;
+
+      if (request.stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+
+        const response = await fetch(`${baseUrl}/v1/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            ...provider.headers,
+          },
+          body: JSON.stringify({
+            model: request.model,
+            prompt: request.prompt,
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
+            top_p: request.top_p,
+            n: request.n,
+            stream: true,
+            logprobs: request.logprobs,
+            echo: request.echo,
+            stop: request.stop,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
+            logit_bias: request.logit_bias,
+            user: request.user,
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.text();
+          res.write(`data: ${JSON.stringify({ error: { message: error } })}\n\n`);
+          res.end();
+          return;
+        }
+
+        if (!response.body) {
+          res.write(`data: ${JSON.stringify({ error: { message: 'No response body' } })}\n\n`);
+          res.end();
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                res.write(`${line}\n\n`);
+              }
+            }
+          }
+          res.write('data: [DONE]\n\n');
+          res.end();
+        } catch (streamError) {
+          const message = streamError instanceof Error ? streamError.message : 'Streaming failed';
+          res.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
+          res.end();
+        }
+      } else {
+        const response = await fetch(`${baseUrl}/v1/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            ...provider.headers,
+          },
+          body: JSON.stringify({
+            model: request.model,
+            prompt: request.prompt,
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
+            top_p: request.top_p,
+            n: request.n,
+            stream: false,
+            logprobs: request.logprobs,
+            echo: request.echo,
+            stop: request.stop,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
+            best_of: request.best_of,
+            logit_bias: request.logit_bias,
+            user: request.user,
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.text();
+          console.error(`[COMPLETIONS] Provider error: ${response.status} ${error}`);
+          res.status(response.status).json({
+            error: {
+              message: `Completion failed: ${response.statusText}`,
+              type: 'server_error',
+              code: 'completion_failed',
+            },
+          });
+          return;
+        }
+
+        const data = await response.json() as CompletionResponse;
+        res.json(data);
+      }
+    } catch (error) {
+      handleError(error, res);
+    }
+  });
+
+  return router;
+}
+
+// ============================================================================
+// Responses API Routes
+// ============================================================================
+
+export function createResponsesRoutes(proxy: ModelProxyCore) {
+  const router = Router();
+
+  const contentPartSchema = z.object({
+    type: z.enum(['text', 'image']),
+    text: z.string().optional(),
+    image_url: z.object({ url: z.string() }).optional(),
+  });
+
+  const inputMessageSchema = z.object({
+    type: z.literal('message'),
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.union([
+      z.string(),
+      z.array(contentPartSchema),
+    ]),
+  });
+
+  const responseRequestSchema = z.object({
+    model: z.string(),
+    input: z.union([z.string(), z.array(inputMessageSchema)]),
+    instructions: z.string().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    top_p: z.number().min(0).max(1).optional(),
+    max_output_tokens: z.number().positive().optional(),
+    stream: z.boolean().optional().default(false),
+    tools: z.array(z.object({
+      type: z.literal('function'),
+      function: z.object({
+        name: z.string(),
+        description: z.string().optional(),
+        parameters: z.record(z.unknown()).optional(),
+        strict: z.boolean().optional(),
+      }),
+    })).optional(),
+    tool_choice: z.union([
+      z.literal('none'),
+      z.literal('auto'),
+      z.literal('required'),
+      z.object({
+        type: z.literal('function'),
+        function: z.object({ name: z.string() }),
+      }),
+    ]).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  });
+
+  router.post('/', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const validation = responseRequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        res.status(400).json({
+          error: {
+            message: `Invalid request: ${validation.error.errors.map(e => e.message).join(', ')}`,
+            type: 'invalid_request_error',
+            code: 'invalid_request',
+          },
+        });
+        return;
+      }
+
+      const request: ResponseRequest = validation.data;
+
+      const allModels = proxy.getAvailableModels();
+      const model = allModels.find(m => m.id === request.model);
+
+      if (!model) {
+        res.status(400).json({
+          error: {
+            message: `Model ${request.model} not found`,
+            type: 'invalid_request_error',
+            code: 'model_not_found',
+          },
+        });
+        return;
+      }
+
+      const provider = proxy.getProvider(model.provider);
+      if (!provider) {
+        res.status(503).json({
+          error: {
+            message: `Provider ${model.provider} unavailable`,
+            type: 'server_error',
+            code: 'provider_unavailable',
+          },
+        });
+        return;
+      }
+
+      const apiKey = (provider.keyPool ? KeyPoolManager.getNextKey(provider.keyPool) : null) || provider.apiKey;
+      const baseUrl = provider.baseUrl;
+
+      if (request.stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+
+        const response = await fetch(`${baseUrl}/v1/responses`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            ...provider.headers,
+          },
+          body: JSON.stringify(request),
+        });
+
+        if (!response.ok) {
+          const error = await response.text();
+          res.write(`data: ${JSON.stringify({ error: { message: error } })}\n\n`);
+          res.end();
+          return;
+        }
+
+        if (!response.body) {
+          res.write(`data: ${JSON.stringify({ error: { message: 'No response body' } })}\n\n`);
+          res.end();
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                res.write(`${line}\n\n`);
+              }
+            }
+          }
+          res.write('data: [DONE]\n\n');
+          res.end();
+        } catch (streamError) {
+          const message = streamError instanceof Error ? streamError.message : 'Streaming failed';
+          res.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
+          res.end();
+        }
+      } else {
+        const response = await fetch(`${baseUrl}/v1/responses`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            ...provider.headers,
+          },
+          body: JSON.stringify(request),
+        });
+
+        if (!response.ok) {
+          const error = await response.text();
+          console.error(`[RESPONSES] Provider error: ${response.status} ${error}`);
+          res.status(response.status).json({
+            error: {
+              message: `Response generation failed: ${response.statusText}`,
+              type: 'server_error',
+              code: 'response_failed',
+            },
+          });
+          return;
+        }
+
+        const data = await response.json() as ResponseAPIResponse;
+        res.json(data);
+      }
+    } catch (error) {
+      handleError(error, res);
+    }
+  });
+
+  return router;
+}
+
+// ============================================================================
 // Main Express Routes Setup
 // ============================================================================
 
@@ -552,6 +1054,9 @@ export function createExpressRoutes(proxy: ModelProxyCore, proxyApiKey: string) 
   // Mount protected routes
   router.use('/v1/chat', createChatRoutes(proxy));
   router.use('/v1/models', createModelRoutes(proxy));
+  router.use('/v1/embeddings', createEmbeddingsRoutes(proxy));
+  router.use('/v1/completions', createCompletionsRoutes(proxy));
+  router.use('/v1/responses', createResponsesRoutes(proxy));
   router.use('/health', createHealthRoutes(proxy));
 
   // 404 handler
