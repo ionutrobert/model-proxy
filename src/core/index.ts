@@ -94,6 +94,7 @@ import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
 import { VerificationOrchestrator } from './verification-orchestrator.js';
+import { injectVerificationPrompt } from './prompt-injector.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -290,6 +291,20 @@ export class ModelProxyCore {
     onError?: (error: Error) => void,
     mode?: SelectionMode
   ): Promise<void> {
+    // Check for #loop trigger to enable verification
+    const orchestrator = new VerificationOrchestrator();
+    if (orchestrator.shouldEnableLoop(request.messages)) {
+      console.log('🔁 Verification loop enabled for streaming (#loop detected)');
+      await this.executeStreamingWithVerification(
+        request,
+        onChunk,
+        onComplete,
+        onError,
+        mode
+      );
+      return;
+    }
+
     if (this.rankedModels.length === 0) {
       await this.refreshHealth();
     }
@@ -317,36 +332,36 @@ export class ModelProxyCore {
       const streamStartTime = performance.now();
       let streamSuccess = false;
 
-		// Random kawaii faces for status header
-		const KAWAII_FACES = [
-			'(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
-			'(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-		];
-		const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-		const modelName = rankedModel.model.name;
+      // Random kawaii faces for status header
+      const KAWAII_FACES = [
+        '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
+        '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+      ];
+      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+      const modelName = rankedModel.model.name;
 
-		// Send initial status header with random face and model name
-		onChunk({
-			id: `status-${Date.now()}`,
-			object: 'chat.completion.chunk',
-			created: Math.floor(Date.now() / 1000),
-			model: modelName,
-			choices: [{
-				index: 0,
-				delta: {
-					content: `\n${randomFace} Model: ${modelName}\n\n`
-				},
-				finish_reason: null
-			}]
-		});
+      // Send initial status header with random face and model name
+      onChunk({
+        id: `status-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: modelName,
+        choices: [{
+          index: 0,
+          delta: {
+            content: `\n${randomFace} Model: ${modelName}\n\n`
+          },
+          finish_reason: null
+        }]
+      });
 
-		try {
-			await provider.executeStreaming(
-				{ ...request, model: rankedModel.model.id },
-				(chunk) => {
-					// Send the original chunk as-is
-					onChunk(chunk);
-				},
+      try {
+        await provider.executeStreaming(
+          { ...request, model: rankedModel.model.id },
+          (chunk) => {
+            // Send the original chunk as-is
+            onChunk(chunk);
+          },
           () => {
             const latency = Math.round(performance.now() - streamStartTime);
             streamSuccess = true;
@@ -355,8 +370,8 @@ export class ModelProxyCore {
               statusCode: '200',
               success: true,
             });
-			circuitBreaker.recordSuccess(rankedModel.model.provider);
-			onComplete?.();
+            circuitBreaker.recordSuccess(rankedModel.model.provider);
+            onComplete?.();
           },
           (error) => {
             const latency = Math.round(performance.now() - streamStartTime);
@@ -372,9 +387,9 @@ export class ModelProxyCore {
               statusCode,
               success: false,
             });
-		circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
-		if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
               onError?.(error);
             }
           }
@@ -396,9 +411,244 @@ export class ModelProxyCore {
         else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
         healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
 
-		circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
+        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-		if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+          onError?.(error instanceof Error ? error : new Error(errorMessage));
+        }
+      }
+    }
+
+    throw new Error('All providers failed for streaming request');
+  }
+
+  /**
+   * Execute streaming with verification loop
+   * Collects full response, checks for completion, and loops if needed
+   */
+  private async executeStreamingWithVerification(
+    request: ChatCompletionRequest,
+    onChunk: (chunk: ChatCompletionChunk) => void,
+    onComplete?: () => void,
+    onError?: (error: Error) => void,
+    mode?: SelectionMode
+  ): Promise<void> {
+    const orchestrator = new VerificationOrchestrator();
+    const sanitizedMessages = orchestrator.sanitizeMessages(request.messages);
+    const messages = injectVerificationPrompt(sanitizedMessages);
+
+    let iteration = 0;
+    const maxIterations = 3;
+    const completionMarker = '[TASK_DONE]';
+
+    while (iteration < maxIterations) {
+      // Collect streamed content
+      let fullContent = '';
+      let streamError: Error | null = null;
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          this.executeStreamingBase(
+            { ...request, messages },
+            (chunk) => {
+              const content = chunk.choices[0]?.delta?.content;
+              if (typeof content === 'string') {
+                fullContent += content;
+                onChunk(chunk);
+              }
+            },
+            () => resolve(),
+            (error) => {
+              streamError = error;
+              reject(error);
+            },
+            mode
+          );
+        });
+
+        // Check for completion marker
+        if (fullContent.includes(completionMarker)) {
+          // Task complete - remove marker from last chunk
+          onComplete?.();
+          return;
+        }
+
+        // Not complete - add feedback and continue
+        iteration++;
+
+        if (iteration < maxIterations) {
+          // Send feedback to user
+          onChunk({
+            id: `loop-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: request.model || 'unknown',
+            choices: [{
+              index: 0,
+              delta: {
+                content: `\n\n[Verification: Task not marked complete. Continuing iteration ${iteration + 1}/${maxIterations}...]\n\n`
+              },
+              finish_reason: null
+            }]
+          });
+
+          // Add feedback for next iteration
+          messages.push(
+            { role: 'assistant', content: fullContent },
+            {
+              role: 'user',
+              content: `You didn't mark the task as complete with ${completionMarker}. Please verify your work and include the marker when finished.`
+            }
+          );
+
+          // Delay before next iteration
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      } catch (error) {
+        if (streamError) {
+          onError?.(streamError);
+        }
+        return;
+      }
+    }
+
+    // Max iterations reached
+    onChunk({
+      id: `loop-end-${Date.now()}`,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: request.model || 'unknown',
+      choices: [{
+        index: 0,
+        delta: {
+          content: `\n\n[Verification: Max iterations (${maxIterations}) reached without completion marker]\n`
+        },
+        finish_reason: null
+      }]
+    });
+
+    onComplete?.();
+  }
+
+  /**
+   * Base streaming execution without verification
+   */
+  private async executeStreamingBase(
+    request: ChatCompletionRequest,
+    onChunk: (chunk: ChatCompletionChunk) => void,
+    onComplete?: () => void,
+    onError?: (error: Error) => void,
+    mode?: SelectionMode
+  ): Promise<void> {
+    if (this.rankedModels.length === 0) {
+      await this.refreshHealth();
+    }
+
+    const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
+    if (streamingModels.length === 0) {
+      throw new Error('No streaming-capable models available');
+    }
+
+    const selectionResult = smartModelSelector.selectForMode(
+      mode || 'best',
+      streamingModels
+    );
+
+    if (!selectionResult) {
+      throw new Error('No streaming model available');
+    }
+
+    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 3);
+
+    for (const rankedModel of fallbackChain) {
+      const provider = this.providers.get(rankedModel.model.provider);
+      if (!provider) continue;
+
+      const streamStartTime = performance.now();
+      let streamSuccess = false;
+
+      // Random kawaii faces for status header
+      const KAWAII_FACES = [
+        '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
+        '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+      ];
+      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+      const modelName = rankedModel.model.name;
+
+      // Send initial status header with random face and model name
+      onChunk({
+        id: `status-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: modelName,
+        choices: [{
+          index: 0,
+          delta: {
+            content: `\n${randomFace} Model: ${modelName}\n\n`
+          },
+          finish_reason: null
+        }]
+      });
+
+      try {
+        await provider.executeStreaming(
+          { ...request, model: rankedModel.model.id },
+          (chunk) => {
+            // Send the original chunk as-is
+            onChunk(chunk);
+          },
+          () => {
+            const latency = Math.round(performance.now() - streamStartTime);
+            streamSuccess = true;
+            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+              latency,
+              statusCode: '200',
+              success: true,
+            });
+            circuitBreaker.recordSuccess(rankedModel.model.provider);
+            onComplete?.();
+          },
+          (error) => {
+            const latency = Math.round(performance.now() - streamStartTime);
+            streamSuccess = false;
+            let statusCode = 'ERR';
+            const msg = error.message;
+            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+            else if (msg.includes('429')) { statusCode = '429'; }
+            else if (msg.includes('404')) { statusCode = '404'; }
+            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
+            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+              latency,
+              statusCode,
+              success: false,
+            });
+            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+
+            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+              onError?.(error);
+            }
+          }
+        );
+
+        if (streamSuccess) {
+          return;
+        }
+      } catch (error) {
+        const latency = Math.round(performance.now() - streamStartTime);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
+
+        let statusCode = 'ERR';
+        let success = false;
+        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
+        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
+        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
+        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
+
+        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
+
+        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
           onError?.(error instanceof Error ? error : new Error(errorMessage));
         }
       }
