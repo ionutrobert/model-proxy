@@ -292,35 +292,13 @@ export class ModelProxyCore {
 			message: `Streaming from ${rankedModel.model.name}`,
 		});
 		
-		// Track if we've sent animation frames
-		let lastAnimationFrame = 0;
-		const ANIMATION_INTERVAL = 500; // Send animation every 500ms
+		// Start animation (shows in server logs)
+		animationManager.start();
 
 		try {
 			await provider.executeStreaming(
 				{ ...request, model: rankedModel.model.id },
 				(chunk) => {
-					// Inject animation frames into the stream
-					const now = Date.now();
-					if (now - lastAnimationFrame > ANIMATION_INTERVAL) {
-						lastAnimationFrame = now;
-						const frame = animationManager.getNextFrame();
-						// Send animation as a special chunk
-						onChunk({
-							id: `anim-${now}`,
-							object: 'chat.completion.chunk',
-							created: Math.floor(now / 1000),
-							model: chunk.model,
-							choices: [{
-								index: 0,
-								delta: {
-									content: `\n${frame} Processing...\n`
-								},
-								finish_reason: null
-							}]
-						});
-					}
-					// Send the actual content chunk
 					onChunk(chunk);
 				},
           () => {

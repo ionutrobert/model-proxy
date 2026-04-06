@@ -298,7 +298,7 @@ const mappedChoices = choices.map((choice: any) => {
  }
 
   /**
-   * Read stream response
+   * Read stream response with timeout protection
    */
   protected async readStream(
     response: Response,
@@ -315,11 +315,28 @@ const mappedChoices = choices.map((choice: any) => {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let lastChunkTime = Date.now();
+    const STREAM_TIMEOUT = 120000; // 2 minutes timeout for stream inactivity
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        // Check for stream timeout
+        if (Date.now() - lastChunkTime > STREAM_TIMEOUT) {
+          const timeoutError = new Error('Stream timeout - no data received for 2 minutes');
+          if (onError) onError(timeoutError);
+          throw timeoutError;
+        }
+
+        const { done, value } = await Promise.race([
+          reader.read(),
+          new Promise<{done: boolean, value: Uint8Array | undefined}>((_, reject) => 
+            setTimeout(() => reject(new Error('Read timeout')), 30000)
+          )
+        ]);
+        
         if (done) break;
+        
+        lastChunkTime = Date.now();
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
