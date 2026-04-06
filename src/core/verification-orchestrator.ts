@@ -17,14 +17,16 @@ export interface LoopConfig {
   triggerPhrase: string;
   retryDelayMs: number;
   feedbackTemplate?: string;
+  timeoutMs?: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   enabled: process.env.ENABLE_VERIFICATION_LOOP !== 'false',
-  maxIterations: parseInt(process.env.LOOP_MAX_ITERATIONS || '0', 10), // 0 = infinite
+  maxIterations: parseInt(process.env.LOOP_MAX_ITERATIONS || '5', 10), // Default to 5 iterations
   completionMarker: process.env.LOOP_COMPLETION_MARKER || '[TASK_DONE]',
   triggerPhrase: '#loop',
   retryDelayMs: parseInt(process.env.LOOP_RETRY_DELAY_MS || '1000', 10),
+  timeoutMs: parseInt(process.env.LOOP_TIMEOUT_MS || '300000', 10), // Default: 5 minutes
 };
 
 export type ExecuteFunction = (
@@ -89,8 +91,7 @@ export class VerificationOrchestrator {
 
   /**
    * Execute with verification loop
-   * Keeps calling the model until [TASK_DONE] appears
-   * If maxIterations is 0, loops infinitely
+   * Keeps calling the model until [TASK_DONE] appears or limits are reached
    */
   async executeWithVerification(
     request: ChatCompletionRequest,
@@ -100,13 +101,19 @@ export class VerificationOrchestrator {
     messages = injectVerificationPrompt(messages);
 
     let iteration = 0;
-    const maxIterations = this.config.maxIterations;
-    const isInfinite = maxIterations === 0;
+    const maxIterations = this.config.maxIterations || 5;
+    const timeoutMs = this.config.timeoutMs || 300000;
+    const startTime = Date.now();
 
-    while (isInfinite || iteration < maxIterations) {
+    while (iteration < maxIterations) {
+      if (Date.now() - startTime > timeoutMs) {
+        console.warn(`[LOOP] Timeout (${timeoutMs}ms) reached at iteration ${iteration}`);
+        break;
+      }
+
       iteration++;
 
-      console.log(`[LOOP] Iteration ${iteration}${isInfinite ? '' : `/${maxIterations}`} - calling model...`);
+      console.log(`[LOOP] Iteration ${iteration}/${maxIterations} - calling model...`);
 
       const response = await executeFn({
         ...request,

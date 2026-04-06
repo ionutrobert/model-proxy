@@ -326,8 +326,16 @@ async executeStreaming(
 
     let iteration = 0;
     const completionMarker = '[TASK_DONE]';
+    const maxIterations = 5;
+    const timeoutMs = 300000;
+    const startTime = Date.now();
 
-    while (true) {
+    while (iteration < maxIterations) {
+      if (Date.now() - startTime > timeoutMs) {
+        console.warn(`[LOOP] Timeout (${timeoutMs}ms) reached at iteration ${iteration}`);
+        break;
+      }
+
       iteration++;
       
       // Collect streamed content
