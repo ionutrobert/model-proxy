@@ -205,45 +205,53 @@ export class ModelProxyCore {
       );
     }
 
-    // Direct model execution when specific model is requested
-    const useAutoSelection = options?.useAutoSelection !== false;
-    if (!useAutoSelection && request.model) {
-      const modelId = request.model;
-      console.log(`\n🎯 Direct execution for model: ${modelId}`);
+// Direct model execution when specific model is requested
+  const useAutoSelection = options?.useAutoSelection !== false;
+  if (!useAutoSelection && request.model) {
+    const modelId = request.model;
+    console.log(`\n🎯 Direct execution for model: ${modelId}`);
 
-      const modelConfig = this.allModels.find(m => m.id === modelId);
-      if (!modelConfig) {
-        throw new Error(`Model ${modelId} not found in available models`);
-      }
-
+    const modelConfig = this.allModels.find(m => m.id === modelId);
+    
+    // If model not found, fall back to auto selection instead of erroring
+    if (!modelConfig) {
+      console.warn(`⚠️ Model ${modelId} not found, falling back to auto selection`);
+      // Fall through to auto selection logic below
+    } else {
       const provider = this.providers.get(modelConfig.provider);
       if (!provider) {
-        throw new Error(`Provider ${modelConfig.provider} not initialized`);
-      }
-
-      const startTime = performance.now();
-      try {
-        const response = await provider.execute({ ...request, model: modelId });
-        const latency = Math.round(performance.now() - startTime);
-        healthTracker.recordRequest(modelId, modelConfig.provider, {
-          latency,
-          statusCode: '200',
-          success: true,
-        });
-        return response;
-      } catch (error) {
-        const latency = Math.round(performance.now() - startTime);
-        const msg = error instanceof Error ? error.message : String(error);
-        let statusCode = 'ERR';
-        let success = false;
-        if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
-        else if (msg.includes('429')) { statusCode = '429'; success = false; }
-        else if (msg.includes('404')) { statusCode = '404'; success = false; }
-        else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-        healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
-        throw error;
+        console.warn(`⚠️ Provider ${modelConfig.provider} not initialized, falling back to auto selection`);
+        // Fall through to auto selection logic below
+      } else {
+        const startTime = performance.now();
+        try {
+          const response = await provider.execute({ ...request, model: modelId });
+          const latency = Math.round(performance.now() - startTime);
+          healthTracker.recordRequest(modelId, modelConfig.provider, {
+            latency,
+            statusCode: '200',
+            success: true,
+          });
+          return response;
+        } catch (error) {
+          const latency = Math.round(performance.now() - startTime);
+          const msg = error instanceof Error ? error.message : String(error);
+          let statusCode = 'ERR';
+          let success = false;
+          if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
+          else if (msg.includes('429')) { statusCode = '429'; success = false; }
+          else if (msg.includes('404')) { statusCode = '404'; success = false; }
+          else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+          healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
+          
+          // On error, try fallback chain instead of throwing
+          console.warn(`⚠️ Model ${modelId} failed: ${msg}, trying fallback chain`);
+          const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
+          return this.executeWithFallback(request, fallbackChain);
+        }
       }
     }
+  }
 
     const mode = options?.mode || 'best';
     console.log(`\n🤖 Executing request (mode: ${mode})`);
