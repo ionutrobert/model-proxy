@@ -91,11 +91,21 @@ class AutoModesHandler {
       const curated = getCuratedModel(candidate.model.id);
       const sweScore = curated?.swe_score || 0;
       const tierWeight = TIER_WEIGHTS[candidate.model.tier] || 0;
-      const thinkingBoost = candidate.health.isThinking && config.preferThinking ? 15 : 0;
+      
+      // Reduce thinking boost from 15 to 5 - thinking models often have issues
+      const thinkingBoost = candidate.health.isThinking && config.preferThinking ? 5 : 0;
       const toolBoost = supportsToolCalling(candidate.model.id) ? 10 : 0;
       const contextBoost = candidate.model.contextWindow >= 128000 ? 10 : candidate.model.contextWindow >= 80000 ? 5 : 0;
 
-      const compositeScore = candidate.stability + thinkingBoost + (sweScore * 0.5) + (tierWeight * 0.3) + toolBoost + contextBoost;
+      // Penalize models with failures
+      const totalRequests = candidate.health.metrics.totalRequests || 1;
+      const successRate = candidate.health.metrics.successfulRequests / totalRequests;
+      const failurePenalty = successRate < 0.9 ? 15 : successRate < 0.95 ? 10 : 0;
+      
+      // Penalize unstable verdicts more heavily
+      const unstablePenalty = candidate.health.verdict === 'Unstable' ? 20 : 0;
+
+      const compositeScore = candidate.stability + thinkingBoost + (sweScore * 0.5) + (tierWeight * 0.3) + toolBoost + contextBoost - failurePenalty - unstablePenalty;
 
       return {
         ...candidate,
@@ -115,9 +125,10 @@ class AutoModesHandler {
       compositeScore: s.compositeScore,
     }));
 
+    const successRate = selected.health.metrics.successfulRequests / (selected.health.metrics.totalRequests || 1);
     const reason = selected.health.isThinking
-      ? `Thinking model selected for coding: stability(${selected.stability}) + SWE(${selected.sweScore}) + thinking_boost(15)`
-      : `Highest composite score: stability(${selected.stability}) + SWE(${selected.sweScore}) + tier(${TIER_WEIGHTS[selected.model.tier]})`;
+      ? `Thinking model: stability(${selected.stability}) + SWE(${selected.sweScore}) + success(${(successRate * 100).toFixed(0)}%)`
+      : `Highest score: stability(${selected.stability}) + SWE(${selected.sweScore}) + tier(${TIER_WEIGHTS[selected.model.tier]})`;
 
     return {
       selected: {
