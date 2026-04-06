@@ -438,15 +438,18 @@ export class ModelProxyCore {
     const messages = injectVerificationPrompt(sanitizedMessages);
 
     let iteration = 0;
-    const maxIterations = 3;
     const completionMarker = '[TASK_DONE]';
 
-    while (iteration < maxIterations) {
+    while (true) {
+      iteration++;
+      
       // Collect streamed content
       let fullContent = '';
       let streamError: Error | null = null;
 
       try {
+        console.log(`[LOOP] Iteration ${iteration} - streaming...`);
+        
         await new Promise<void>((resolve, reject) => {
           this.executeStreamingBase(
             { ...request, messages },
@@ -468,66 +471,124 @@ export class ModelProxyCore {
 
         // Check for completion marker
         if (fullContent.includes(completionMarker)) {
-          // Task complete - remove marker from last chunk
+          console.log(`[LOOP] Task completed at iteration ${iteration}`);
           onComplete?.();
           return;
         }
 
-        // Not complete - add feedback and continue
-        iteration++;
+        // Generate smart feedback
+        const feedback = this.generateSmartFeedback(fullContent, iteration);
+        console.log(`[LOOP] Iteration ${iteration} incomplete - continuing...`);
 
-        if (iteration < maxIterations) {
-          // Send feedback to user
+        // Send feedback to user
+        onChunk({
+          id: `loop-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: request.model || 'unknown',
+          choices: [{
+            index: 0,
+            delta: {
+              content: `\n\n[Verification: Iteration ${iteration} - continuing...]\n\n`
+            },
+            finish_reason: null
+          }]
+        });
+
+        // Add feedback for next iteration
+        messages.push(
+          { role: 'assistant', content: fullContent },
+          { role: 'user', content: feedback }
+        );
+
+        // Delay before next iteration
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
+        
+        // Don't call onError - instead continue loop with new model
+        // The fallback chain in executeStreamingBase already tried alternatives
+        
+        // If we have partial content, save it and retry with different model
+        if (fullContent && fullContent.length > 10) {
+          messages.push(
+            { role: 'assistant', content: fullContent },
+            { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
+          );
+          
           onChunk({
-            id: `loop-${Date.now()}`,
+            id: `loop-error-${Date.now()}`,
             object: 'chat.completion.chunk',
             created: Math.floor(Date.now() / 1000),
             model: request.model || 'unknown',
             choices: [{
               index: 0,
               delta: {
-                content: `\n\n[Verification: Task not marked complete. Continuing iteration ${iteration + 1}/${maxIterations}...]\n\n`
+                content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
               },
               finish_reason: null
             }]
           });
-
-          // Add feedback for next iteration
-          messages.push(
-            { role: 'assistant', content: fullContent },
-            {
-              role: 'user',
-              content: `You didn't mark the task as complete with ${completionMarker}. Please verify your work and include the marker when finished.`
-            }
-          );
-
-          // Delay before next iteration
-          await new Promise(r => setTimeout(r, 1000));
+          
+          await new Promise(r => setTimeout(r, 500));
+          continue;
         }
-      } catch (error) {
-        if (streamError) {
-          onError?.(streamError);
-        }
-        return;
+        
+        // No partial content - just retry
+        onChunk({
+          id: `loop-error-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: request.model || 'unknown',
+          choices: [{
+            index: 0,
+            delta: {
+              content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
+            },
+            finish_reason: null
+          }]
+        });
+        
+        await new Promise(r => setTimeout(r, 500));
+        continue;
       }
     }
+  }
 
-    // Max iterations reached
-    onChunk({
-      id: `loop-end-${Date.now()}`,
-      object: 'chat.completion.chunk',
-      created: Math.floor(Date.now() / 1000),
-      model: request.model || 'unknown',
-      choices: [{
-        index: 0,
-        delta: {
-          content: `\n\n[Verification: Max iterations (${maxIterations}) reached without completion marker]\n`
-        },
-        finish_reason: null
-      }]
-    });
+  private generateSmartFeedback(content: string, iteration: number): string {
+    const marker = '[TASK_DONE]';
+    const trimmed = content.trim();
+    
+    if (trimmed.endsWith('...') || /\w\s*$/.test(trimmed)) {
+      return `You stopped mid-sentence. Continue from where you left off. Add ${marker} when finished.`;
+    }
 
-    onComplete?.();
+    const openBraces = (trimmed.match(/\{/g) || []).length;
+    const closeBraces = (trimmed.match(/\}/g) || []).length;
+    if (openBraces > closeBraces) {
+      return `Your code has unclosed braces. Complete your code block and add ${marker}.`;
+    }
+
+    const openParens = (trimmed.match(/\(/g) || []).length;
+    const closeParens = (trimmed.match(/\)/g) || []).length;
+    if (openParens > closeParens) {
+      return `Your code has unclosed parentheses. Complete your code and add ${marker}.`;
+    }
+
+    if (/<[a-zA-Z][^>]*$/.test(trimmed)) {
+      return `Your HTML/XML is incomplete. Close your tags and add ${marker}.`;
+    }
+
+    if (/```[a-z]*$/im.test(trimmed) && !/```[\s\S]*```/m.test(trimmed)) {
+      return `Your code block is incomplete. Finish your code, close with \`\`\`, and add ${marker}.`;
+    }
+
+    if (iteration <= 3) {
+      return `Continue your work. When complete, add ${marker} at the end.`;
+    }
+
+    return `Iteration ${iteration}. Please finish and add ${marker}.`;
   }
 
   /**

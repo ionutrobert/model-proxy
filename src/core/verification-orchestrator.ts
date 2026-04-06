@@ -20,8 +20,8 @@ export interface LoopConfig {
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  enabled: process.env.ENABLE_VERIFICATION_LOOP !== 'false', // Enabled by default
-  maxIterations: parseInt(process.env.LOOP_MAX_ITERATIONS || '3', 10),
+  enabled: process.env.ENABLE_VERIFICATION_LOOP !== 'false',
+  maxIterations: parseInt(process.env.LOOP_MAX_ITERATIONS || '0', 10), // 0 = infinite
   completionMarker: process.env.LOOP_COMPLETION_MARKER || '[TASK_DONE]',
   triggerPhrase: '#loop',
   retryDelayMs: parseInt(process.env.LOOP_RETRY_DELAY_MS || '1000', 10),
@@ -75,56 +75,59 @@ export class VerificationOrchestrator {
 
   /**
    * Execute with verification loop
-   * Keeps calling the model until [TASK_DONE] appears or max iterations reached
+   * Keeps calling the model until [TASK_DONE] appears
+   * If maxIterations is 0, loops infinitely
    */
   async executeWithVerification(
     request: ChatCompletionRequest,
     executeFn: ExecuteFunction
   ): Promise<ChatCompletionResponse> {
-    // Sanitize messages (remove #loop trigger)
     let messages = this.sanitizeMessages(request.messages);
-    
-    // Inject verification system prompt
     messages = injectVerificationPrompt(messages);
 
     let iteration = 0;
     const maxIterations = this.config.maxIterations;
+    const isInfinite = maxIterations === 0;
 
-    while (iteration < maxIterations) {
-      // Call the model
-    const response = await executeFn({
-      ...request,
-      messages,
-    });
+    while (isInfinite || iteration < maxIterations) {
+      iteration++;
 
-    const content = response.choices[0]?.message?.content;
-    const contentStr = typeof content === 'string' ? content : '';
+      console.log(`[LOOP] Iteration ${iteration}${isInfinite ? '' : `/${maxIterations}`} - calling model...`);
 
-    // Check for completion marker
-    const check = detectCompletion(contentStr, {
-      completionMarker: this.config.completionMarker,
-      feedbackTemplate: this.config.feedbackTemplate,
-    });
+      const response = await executeFn({
+        ...request,
+        messages,
+      });
 
-    if (check.isComplete) {
-      // Task is complete - return clean response
-      return {
-        ...response,
-        choices: [
-          {
-            ...response.choices[0],
-            message: {
-              ...response.choices[0].message,
-              content: contentStr
-                .replace(new RegExp(this.config.completionMarker, 'g'), '')
-                .trim(),
+      const content = response.choices[0]?.message?.content;
+      const contentStr = typeof content === 'string' ? content : '';
+
+      const check = detectCompletion(contentStr, {
+        completionMarker: this.config.completionMarker,
+        feedbackTemplate: this.config.feedbackTemplate,
+      });
+
+      if (check.isComplete) {
+        console.log(`[LOOP] Task completed at iteration ${iteration}`);
+        return {
+          ...response,
+          choices: [
+            {
+              ...response.choices[0],
+              message: {
+                ...response.choices[0].message,
+                content: contentStr
+                  .replace(new RegExp(this.config.completionMarker, 'g'), '')
+                  .trim(),
+              },
             },
-          },
-        ],
-      };
-    }
+          ],
+        };
+      }
 
-      // Not complete - add feedback and continue
+      const feedback = this.generateSmartFeedback(contentStr, iteration);
+      console.log(`[LOOP] Iteration ${iteration} incomplete - continuing...`);
+
       messages = [
         ...messages,
         {
@@ -133,25 +136,61 @@ export class VerificationOrchestrator {
         },
         {
           role: 'user',
-          content: check.feedback || 'Please continue and mark the task as complete.',
+          content: feedback,
         },
       ];
 
-      iteration++;
-
-      // Optional delay between iterations
       if (this.config.retryDelayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, this.config.retryDelayMs));
       }
     }
 
-    // Max iterations reached - return last response
     console.warn(`[LOOP] Max iterations (${maxIterations}) reached without completion marker`);
-    
     const lastContent = messages[messages.length - 1]?.content || '';
     return await executeFn({
       ...request,
       messages,
     });
+  }
+
+  /**
+   * Generate smart feedback based on response content
+   */
+  private generateSmartFeedback(content: string, iteration: number): string {
+    const trimmed = content.trim();
+    
+    if (trimmed.endsWith('...') || /\w\s*$/.test(trimmed)) {
+      return `You stopped mid-sentence. Continue from where you left off. When done, add ${this.config.completionMarker}`;
+    }
+
+    const openBraces = (trimmed.match(/\{/g) || []).length;
+    const closeBraces = (trimmed.match(/\}/g) || []).length;
+    if (openBraces > closeBraces) {
+      return `Your code has unclosed braces. Complete your code block and add ${this.config.completionMarker} when finished.`;
+    }
+
+    const openParens = (trimmed.match(/\(/g) || []).length;
+    const closeParens = (trimmed.match(/\)/g) || []).length;
+    if (openParens > closeParens) {
+      return `Your code has unclosed parentheses. Complete your code and add ${this.config.completionMarker} when finished.`;
+    }
+
+    if (/<[a-zA-Z][^>]*$/.test(trimmed)) {
+      return `Your HTML/XML is incomplete. Close your tags and add ${this.config.completionMarker} when finished.`;
+    }
+
+    if (/```[a-z]*$/im.test(trimmed) && !/```[\s\S]*```/m.test(trimmed)) {
+      return `Your code block is incomplete. Finish your code, close with \`\`\`, and add ${this.config.completionMarker}.`;
+    }
+
+    if (iteration <= 3) {
+      return `Continue your work. When the task is complete, add ${this.config.completionMarker} at the end.`;
+    }
+
+    if (iteration <= 10) {
+      return `You're on iteration ${iteration}. Complete the task and add ${this.config.completionMarker}.`;
+    }
+
+    return `Iteration ${iteration}. Please finish the task and add ${this.config.completionMarker}.`;
   }
 }
