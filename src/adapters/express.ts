@@ -30,7 +30,10 @@ import { KeyPoolManager } from '../core/key-pool.js';
 
 const chatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.string().nullable(), // Allow null for tool calling
+  content: z.union([
+    z.string().nullable(),
+    z.array(z.any()), // Support multimodal content (images, etc.)
+  ]),
   name: z.string().optional(),
   tool_call_id: z.string().optional(),
 });

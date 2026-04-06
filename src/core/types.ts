@@ -4,7 +4,7 @@
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | any[] | null; // Support multimodal content (text, images, etc.)
   name?: string;
   tool_call_id?: string;
 }

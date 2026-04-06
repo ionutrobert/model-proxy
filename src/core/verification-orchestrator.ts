@@ -92,36 +92,37 @@ export class VerificationOrchestrator {
 
     while (iteration < maxIterations) {
       // Call the model
-      const response = await executeFn({
-        ...request,
-        messages,
-      });
+    const response = await executeFn({
+      ...request,
+      messages,
+    });
 
-      const content = response.choices[0]?.message?.content || '';
+    const content = response.choices[0]?.message?.content;
+    const contentStr = typeof content === 'string' ? content : '';
 
-      // Check for completion marker
-      const check = detectCompletion(content, {
-        completionMarker: this.config.completionMarker,
-        feedbackTemplate: this.config.feedbackTemplate,
-      });
+    // Check for completion marker
+    const check = detectCompletion(contentStr, {
+      completionMarker: this.config.completionMarker,
+      feedbackTemplate: this.config.feedbackTemplate,
+    });
 
-      if (check.isComplete) {
-        // Task is complete - return clean response
-        return {
-          ...response,
-          choices: [
-            {
-              ...response.choices[0],
-              message: {
-                ...response.choices[0].message,
-                content: content
-                  .replace(new RegExp(this.config.completionMarker, 'g'), '')
-                  .trim(),
-              },
+    if (check.isComplete) {
+      // Task is complete - return clean response
+      return {
+        ...response,
+        choices: [
+          {
+            ...response.choices[0],
+            message: {
+              ...response.choices[0].message,
+              content: contentStr
+                .replace(new RegExp(this.config.completionMarker, 'g'), '')
+                .trim(),
             },
-          ],
-        };
-      }
+          },
+        ],
+      };
+    }
 
       // Not complete - add feedback and continue
       messages = [
