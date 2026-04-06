@@ -324,9 +324,8 @@ export class ModelProxyCore {
               statusCode: '200',
               success: true,
             });
-            circuitBreaker.recordSuccess(rankedModel.model.provider);
-            animationManager.stop('✓ Complete');
-            onComplete?.();
+			circuitBreaker.recordSuccess(rankedModel.model.provider);
+			onComplete?.();
           },
           (error) => {
             const latency = Math.round(performance.now() - streamStartTime);
@@ -342,10 +341,9 @@ export class ModelProxyCore {
               statusCode,
               success: false,
             });
-            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
-            animationManager.stop('✗ Error');
+		circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
-            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+		if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
               onError?.(error);
             }
           }
@@ -367,10 +365,9 @@ export class ModelProxyCore {
         else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
         healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
 
-        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-        animationManager.stop('✗ Error');
+		circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+		if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
           onError?.(error instanceof Error ? error : new Error(errorMessage));
         }
       }
