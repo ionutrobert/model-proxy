@@ -593,6 +593,7 @@ export class ModelProxyCore {
 
   /**
    * Base streaming execution without verification
+   * Includes automatic model switching on errors
    */
   private async executeStreamingBase(
     request: ChatCompletionRequest,
@@ -619,16 +620,21 @@ export class ModelProxyCore {
       throw new Error('No streaming model available');
     }
 
-    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 3);
-
+    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5); // Increased to 5
+    const triedModels: Set<string> = new Set();
+    
     for (const rankedModel of fallbackChain) {
+      if (triedModels.has(rankedModel.model.id)) continue;
+      triedModels.add(rankedModel.model.id);
+
       const provider = this.providers.get(rankedModel.model.provider);
       if (!provider) continue;
 
       const streamStartTime = performance.now();
       let streamSuccess = false;
+      let lastChunkTime = streamStartTime;
+      let chunkCount = 0;
 
-      // Random kawaii faces for status header
       const KAWAII_FACES = [
         '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
         '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
@@ -636,7 +642,6 @@ export class ModelProxyCore {
       const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
       const modelName = rankedModel.model.name;
 
-      // Send initial status header with random face and model name
       onChunk({
         id: `status-${Date.now()}`,
         object: 'chat.completion.chunk',
@@ -644,9 +649,7 @@ export class ModelProxyCore {
         model: modelName,
         choices: [{
           index: 0,
-          delta: {
-            content: `\n${randomFace} Model: ${modelName}\n\n`
-          },
+          delta: { content: `\n${randomFace} Model: ${modelName}\n\n` },
           finish_reason: null
         }]
       });
@@ -655,7 +658,8 @@ export class ModelProxyCore {
         await provider.executeStreaming(
           { ...request, model: rankedModel.model.id },
           (chunk) => {
-            // Send the original chunk as-is
+            lastChunkTime = performance.now();
+            chunkCount++;
             onChunk(chunk);
           },
           () => {
@@ -678,11 +682,7 @@ export class ModelProxyCore {
             else if (msg.includes('429')) { statusCode = '429'; }
             else if (msg.includes('404')) { statusCode = '404'; }
             else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-              latency,
-              statusCode,
-              success: false,
-            });
+            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
             circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
             if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
@@ -693,6 +693,21 @@ export class ModelProxyCore {
 
         if (streamSuccess) {
           return;
+        }
+        
+        // Check if stream stopped unexpectedly (got chunks but didn't complete)
+        const streamDuration = performance.now() - streamStartTime;
+        if (chunkCount > 0 && !streamSuccess && streamDuration > 5000) {
+          console.log(`[MODEL-SWITCH] ${rankedModel.model.name} stopped unexpectedly after ${chunkCount} chunks`);
+          
+          // Mark model as unstable
+          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+            latency: Math.round(streamDuration),
+            statusCode: 'ERR',
+            success: false,
+          });
+          circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
+          continue; // Try next model
         }
       } catch (error) {
         const latency = Math.round(performance.now() - streamStartTime);
@@ -708,10 +723,7 @@ export class ModelProxyCore {
         healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
 
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-
-        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-          onError?.(error instanceof Error ? error : new Error(errorMessage));
-        }
+        continue; // Try next model instead of throwing
       }
     }
 
