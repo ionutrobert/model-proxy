@@ -284,145 +284,32 @@ export class ModelProxyCore {
     );
   }
 
-  async executeStreaming(
-    request: ChatCompletionRequest,
-    onChunk: (chunk: ChatCompletionChunk) => void,
-    onComplete?: () => void,
-    onError?: (error: Error) => void,
-    mode?: SelectionMode
-  ): Promise<void> {
-    // Check for #loop trigger to enable verification
-    const orchestrator = new VerificationOrchestrator();
-    if (orchestrator.shouldEnableLoop(request.messages)) {
-      console.log('🔁 Verification loop enabled for streaming (#loop detected)');
-      await this.executeStreamingWithVerification(
-        request,
-        onChunk,
-        onComplete,
-        onError,
-        mode
-      );
-      return;
-    }
-
-    if (this.rankedModels.length === 0) {
-      await this.refreshHealth();
-    }
-
-    const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
-    if (streamingModels.length === 0) {
-      throw new Error('No streaming-capable models available');
-    }
-
-    const selectionResult = smartModelSelector.selectForMode(
-      mode || 'best',
-      streamingModels
+async executeStreaming(
+  request: ChatCompletionRequest,
+  onChunk: (chunk: ChatCompletionChunk) => void,
+  onComplete?: () => void,
+  onError?: (error: Error) => void,
+  mode?: SelectionMode
+): Promise<void> {
+  // Check for #loop trigger to enable verification
+  const orchestrator = new VerificationOrchestrator();
+  if (orchestrator.shouldEnableLoop(request.messages)) {
+    console.log('🔁 Verification loop enabled for streaming (#loop detected)');
+    await this.executeStreamingWithVerification(
+      request,
+      onChunk,
+      onComplete,
+      onError,
+      mode
     );
-
-    if (!selectionResult) {
-      throw new Error('No streaming model available');
-    }
-
-    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 3);
-
-    for (const rankedModel of fallbackChain) {
-      const provider = this.providers.get(rankedModel.model.provider);
-      if (!provider) continue;
-
-      const streamStartTime = performance.now();
-      let streamSuccess = false;
-
-      // Random kawaii faces for status header
-      const KAWAII_FACES = [
-        '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
-        '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-      ];
-      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-      const modelName = rankedModel.model.name;
-
-      // Send initial status header with random face and model name
-      onChunk({
-        id: `status-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: modelName,
-        choices: [{
-          index: 0,
-          delta: {
-            content: `\n${randomFace} Model: ${modelName}\n\n`
-          },
-          finish_reason: null
-        }]
-      });
-
-      try {
-        await provider.executeStreaming(
-          { ...request, model: rankedModel.model.id },
-          (chunk) => {
-            // Send the original chunk as-is
-            onChunk(chunk);
-          },
-          () => {
-            const latency = Math.round(performance.now() - streamStartTime);
-            streamSuccess = true;
-            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-              latency,
-              statusCode: '200',
-              success: true,
-            });
-            circuitBreaker.recordSuccess(rankedModel.model.provider);
-            onComplete?.();
-          },
-          (error) => {
-            const latency = Math.round(performance.now() - streamStartTime);
-            streamSuccess = false;
-            let statusCode = 'ERR';
-            const msg = error.message;
-            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
-            else if (msg.includes('429')) { statusCode = '429'; }
-            else if (msg.includes('404')) { statusCode = '404'; }
-            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-              latency,
-              statusCode,
-              success: false,
-            });
-            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
-
-            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-              onError?.(error);
-            }
-          }
-        );
-
-        if (streamSuccess) {
-          return;
-        }
-      } catch (error) {
-        const latency = Math.round(performance.now() - streamStartTime);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
-
-        let statusCode = 'ERR';
-        let success = false;
-        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
-        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
-        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
-        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
-
-        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-
-        if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-          onError?.(error instanceof Error ? error : new Error(errorMessage));
-        }
-      }
-    }
-
-    throw new Error('All providers failed for streaming request');
+    return;
   }
 
-  /**
+  // Delegate to the base streaming method which handles model switching with content preservation
+  await this.executeStreamingBase(request, onChunk, onComplete, onError, mode);
+}
+
+/**
    * Execute streaming with verification loop
    * Collects full response, checks for completion, and loops if needed
    */
@@ -447,27 +334,34 @@ export class ModelProxyCore {
       let fullContent = '';
       let streamError: Error | null = null;
 
-      try {
-        console.log(`[LOOP] Iteration ${iteration} - streaming...`);
-        
-        await new Promise<void>((resolve, reject) => {
-          this.executeStreamingBase(
-            { ...request, messages },
-            (chunk) => {
-              const content = chunk.choices[0]?.delta?.content;
-              if (typeof content === 'string') {
+try {
+      console.log(`[LOOP] Iteration ${iteration} - streaming...`);
+
+      await new Promise<void>((resolve, reject) => {
+        this.executeStreamingBase(
+          { ...request, messages },
+          (chunk) => {
+            const content = chunk.choices[0]?.delta?.content;
+            if (typeof content === 'string') {
+              // Filter out status/switch notifications from content accumulation
+              if (!content.includes('Model:') &&
+                  !content.includes('Switching to') &&
+                  !content.includes('⚠️') &&
+                  !content.includes('🔄') &&
+                  !content.includes('📝 Preserving')) {
                 fullContent += content;
-                onChunk(chunk);
               }
-            },
-            () => resolve(),
-            (error) => {
-              streamError = error;
-              reject(error);
-            },
-            mode
-          );
-        });
+              onChunk(chunk);
+            }
+          },
+          () => resolve(),
+          (error) => {
+            streamError = error;
+            reject(error);
+          },
+          mode
+        );
+      });
 
         // Check for completion marker
         if (fullContent.includes(completionMarker)) {
@@ -591,144 +485,218 @@ export class ModelProxyCore {
     return `Iteration ${iteration}. Please finish and add ${marker}.`;
   }
 
-  /**
-   * Base streaming execution without verification
-   * Includes automatic model switching on errors
-   */
-  private async executeStreamingBase(
-    request: ChatCompletionRequest,
-    onChunk: (chunk: ChatCompletionChunk) => void,
-    onComplete?: () => void,
-    onError?: (error: Error) => void,
-    mode?: SelectionMode
-  ): Promise<void> {
-    if (this.rankedModels.length === 0) {
-      await this.refreshHealth();
-    }
-
-    const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
-    if (streamingModels.length === 0) {
-      throw new Error('No streaming-capable models available');
-    }
-
-    const selectionResult = smartModelSelector.selectForMode(
-      mode || 'best',
-      streamingModels
-    );
-
-    if (!selectionResult) {
-      throw new Error('No streaming model available');
-    }
-
-    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5); // Increased to 5
-    const triedModels: Set<string> = new Set();
-    
-    for (const rankedModel of fallbackChain) {
-      if (triedModels.has(rankedModel.model.id)) continue;
-      triedModels.add(rankedModel.model.id);
-
-      const provider = this.providers.get(rankedModel.model.provider);
-      if (!provider) continue;
-
-      const streamStartTime = performance.now();
-      let streamSuccess = false;
-      let lastChunkTime = streamStartTime;
-      let chunkCount = 0;
-
-      const KAWAII_FACES = [
-        '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
-        '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-      ];
-      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-      const modelName = rankedModel.model.name;
-
-      onChunk({
-        id: `status-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: modelName,
-        choices: [{
-          index: 0,
-          delta: { content: `\n${randomFace} Model: ${modelName}\n\n` },
-          finish_reason: null
-        }]
-      });
-
-      try {
-        await provider.executeStreaming(
-          { ...request, model: rankedModel.model.id },
-          (chunk) => {
-            lastChunkTime = performance.now();
-            chunkCount++;
-            onChunk(chunk);
-          },
-          () => {
-            const latency = Math.round(performance.now() - streamStartTime);
-            streamSuccess = true;
-            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-              latency,
-              statusCode: '200',
-              success: true,
-            });
-            circuitBreaker.recordSuccess(rankedModel.model.provider);
-            onComplete?.();
-          },
-          (error) => {
-            const latency = Math.round(performance.now() - streamStartTime);
-            streamSuccess = false;
-            let statusCode = 'ERR';
-            const msg = error.message;
-            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
-            else if (msg.includes('429')) { statusCode = '429'; }
-            else if (msg.includes('404')) { statusCode = '404'; }
-            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-            healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
-            circuitBreaker.recordFailure(rankedModel.model.provider, msg);
-
-            if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-              onError?.(error);
-            }
-          }
-        );
-
-        if (streamSuccess) {
-          return;
-        }
-        
-        // Check if stream stopped unexpectedly (got chunks but didn't complete)
-        const streamDuration = performance.now() - streamStartTime;
-        if (chunkCount > 0 && !streamSuccess && streamDuration > 5000) {
-          console.log(`[MODEL-SWITCH] ${rankedModel.model.name} stopped unexpectedly after ${chunkCount} chunks`);
-          
-          // Mark model as unstable
-          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-            latency: Math.round(streamDuration),
-            statusCode: 'ERR',
-            success: false,
-          });
-          circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
-          continue; // Try next model
-        }
-      } catch (error) {
-        const latency = Math.round(performance.now() - streamStartTime);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
-
-        let statusCode = 'ERR';
-        let success = false;
-        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
-        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
-        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
-        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
-
-        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-        continue; // Try next model instead of throwing
-      }
-    }
-
-    throw new Error('All providers failed for streaming request');
+/**
+* Base streaming execution without verification
+* Includes automatic model switching on errors with partial content preservation
+*/
+private async executeStreamingBase(
+  request: ChatCompletionRequest,
+  onChunk: (chunk: ChatCompletionChunk) => void,
+  onComplete?: () => void,
+  onError?: (error: Error) => void,
+  mode?: SelectionMode
+): Promise<void> {
+  if (this.rankedModels.length === 0) {
+    await this.refreshHealth();
   }
+
+  const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
+  if (streamingModels.length === 0) {
+    throw new Error('No streaming-capable models available');
+  }
+
+  const selectionResult = smartModelSelector.selectForMode(
+    mode || 'best',
+    streamingModels
+  );
+
+  if (!selectionResult) {
+    throw new Error('No streaming model available');
+  }
+
+  const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
+  const triedModels: Set<string> = new Set();
+  let accumulatedContent = '';
+  let lastModelName = '';
+
+  const KAWAII_FACES = [
+    '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+    '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+  ];
+
+  for (const rankedModel of fallbackChain) {
+    if (triedModels.has(rankedModel.model.id)) continue;
+    triedModels.add(rankedModel.model.id);
+
+    const provider = this.providers.get(rankedModel.model.provider);
+    if (!provider) continue;
+
+    const streamStartTime = performance.now();
+    let streamSuccess = false;
+    let chunkCount = 0;
+    let modelPartialContent = '';
+
+    const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+    const modelName = rankedModel.model.name;
+    lastModelName = modelName;
+
+    onChunk({
+      id: `status-${Date.now()}`,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: modelName,
+      choices: [{
+        index: 0,
+        delta: { content: `\n${randomFace} Model: ${modelName}\n\n` },
+        finish_reason: null
+      }]
+    });
+
+    let modelRequest = { ...request, model: rankedModel.model.id };
+    if (accumulatedContent.length > 0) {
+      const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output:\n---\n${accumulatedContent.slice(-2000)}\n---\nContinue exactly from where it stopped, maintaining the same format and style.]`;
+      modelRequest = {
+        ...modelRequest,
+        messages: [
+          ...request.messages,
+          { role: 'assistant', content: accumulatedContent },
+          { role: 'user', content: continuationPrompt }
+        ]
+      };
+    }
+
+    try {
+      await provider.executeStreaming(
+        modelRequest,
+        (chunk) => {
+          chunkCount++;
+          const content = chunk.choices[0]?.delta?.content;
+          if (typeof content === 'string') {
+            modelPartialContent += content;
+            accumulatedContent += content;
+          }
+          onChunk(chunk);
+        },
+        () => {
+          const latency = Math.round(performance.now() - streamStartTime);
+          streamSuccess = true;
+          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+            latency,
+            statusCode: '200',
+            success: true,
+          });
+          circuitBreaker.recordSuccess(rankedModel.model.provider);
+          onComplete?.();
+        },
+        (error) => {
+          const latency = Math.round(performance.now() - streamStartTime);
+          streamSuccess = false;
+          let statusCode = 'ERR';
+          const msg = error.message;
+          if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+          else if (msg.includes('429')) { statusCode = '429'; }
+          else if (msg.includes('404')) { statusCode = '404'; }
+          else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
+          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
+          circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+
+          const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+          if (nextModel) {
+            onChunk({
+              id: `switch-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: modelName,
+              choices: [{
+                index: 0,
+                delta: {
+                  content: `\n\n⚠️ Model ${modelName} encountered an error. Switching to ${nextModel.model.name}...\n` +
+                    (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
+                    `🔄 Continuing...\n\n`
+                },
+                finish_reason: null
+              }]
+            });
+            console.log(`[MODEL-SWITCH] ${modelName} → ${nextModel.model.name} (preserved ${modelPartialContent.length} chars)`);
+          } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+            onError?.(error);
+          }
+        }
+      );
+
+      if (streamSuccess) {
+        return;
+      }
+
+      const streamDuration = performance.now() - streamStartTime;
+      if (chunkCount > 0 && !streamSuccess && streamDuration > 5000) {
+        console.log(`[MODEL-SWITCH] ${rankedModel.model.name} stopped unexpectedly after ${chunkCount} chunks`);
+
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+          latency: Math.round(streamDuration),
+          statusCode: 'ERR',
+          success: false,
+        });
+        circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
+
+        const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+        if (nextModel) {
+          onChunk({
+            id: `switch-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: modelName,
+            choices: [{
+              index: 0,
+              delta: {
+                content: `\n\n⚠️ Stream from ${modelName} stopped unexpectedly. Switching to ${nextModel.model.name}...\n` +
+                  (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars.\n` : '') +
+                  `🔄 Continuing...\n\n`
+              },
+              finish_reason: null
+            }]
+          });
+        }
+        continue;
+      }
+    } catch (error) {
+      const latency = Math.round(performance.now() - streamStartTime);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
+
+      let statusCode = 'ERR';
+      if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; }
+      else if (errorMessage.includes('429')) { statusCode = '429'; }
+      else if (errorMessage.includes('404')) { statusCode = '404'; }
+      else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; }
+
+      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
+      circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
+
+      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+      if (nextModel) {
+        onChunk({
+          id: `switch-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: modelName,
+          choices: [{
+            index: 0,
+            delta: {
+              content: `\n\n⚠️ Model ${modelName} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.name}...\n` +
+                (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
+                `🔄 Continuing...\n\n`
+            },
+            finish_reason: null
+          }]
+        });
+      }
+      continue;
+    }
+  }
+
+  throw new Error('All providers failed for streaming request');
+}
 
   private async executeWithFallback(
     request: ChatCompletionRequest,

@@ -78,6 +78,16 @@ export interface ChatCompletionChunk {
   }[];
 }
 
+export interface ModelSwitchInfo {
+  fromModel: string;
+  toModel: string;
+  partialContent: string;
+  error: string;
+  chunkCount: number;
+}
+
+export type ModelSwitchCallback = (info: ModelSwitchInfo) => void;
+
 // ============================================================================
 // Provider types
 // ============================================================================
