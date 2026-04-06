@@ -292,28 +292,30 @@ export class ModelProxyCore {
 			message: 'Thinking',
 		});
 		
-		// Track thinking state for animation injection
-		let isThinking = false;
+		// Track streaming state for animation injection
+		let lastChunkTime = Date.now();
 		let lastAnimationTime = 0;
-		const ANIMATION_INTERVAL = 800; // Update animation every 800ms during thinking
+		let chunkCount = 0;
+		const ANIMATION_INTERVAL = 2000; // Show animation every 2s during slow streaming
+		const SLOW_STREAM_THRESHOLD = 500; // Consider slow if >500ms between chunks
 
 		try {
 			await provider.executeStreaming(
 				{ ...request, model: rankedModel.model.id },
 				(chunk) => {
 					const now = Date.now();
-					const delta = chunk.choices?.[0]?.delta as any;
+					chunkCount++;
 					
-					// Detect thinking phase - check for reasoning_content or thinking tags
-					const hasReasoning = delta?.reasoning_content || 
-					                     delta?.content?.includes('  ');
+					// Detect slow streaming (potential thinking/processing phase)
+					const timeSinceLastChunk = now - lastChunkTime;
+					const isSlowStream = timeSinceLastChunk > SLOW_STREAM_THRESHOLD;
 					
-					// Start thinking animation
-					if (hasReasoning && !isThinking) {
-						isThinking = true;
+					// Show animation during slow streaming phases
+					if (isSlowStream && now - lastAnimationTime > ANIMATION_INTERVAL) {
 						lastAnimationTime = now;
-						// Send initial animation frame
 						const frame = animationManager.getNextFrame();
+						
+						// Inject animation frame as content chunk
 						onChunk({
 							id: `anim-${now}`,
 							object: 'chat.completion.chunk',
@@ -321,49 +323,17 @@ export class ModelProxyCore {
 							model: chunk.model,
 							choices: [{
 								index: 0,
-								delta: { content: `\n${frame} Thinking...\n` },
+								delta: { 
+									content: `\n${frame} Processing...\n`
+								},
 								finish_reason: null
 							}]
 						});
 					}
 					
-					// Continue thinking animation
-					if (isThinking && now - lastAnimationTime > ANIMATION_INTERVAL) {
-						lastAnimationTime = now;
-						const frame = animationManager.getNextFrame();
-						onChunk({
-							id: `anim-${now}`,
-							object: 'chat.completion.chunk',
-							created: Math.floor(now / 1000),
-							model: chunk.model,
-							choices: [{
-								index: 0,
-								delta: { content: `${frame}\n` },
-								finish_reason: null
-							}]
-						});
-					}
+					lastChunkTime = now;
 					
-					// Detect end of thinking (actual content starts)
-					if (isThinking && delta?.content && 
-					    !delta.reasoning_content &&
-					    !delta.content.includes('  ')) {
-						isThinking = false;
-						// Send completion marker
-						onChunk({
-							id: `anim-done-${now}`,
-							object: 'chat.completion.chunk',
-							created: Math.floor(now / 1000),
-							model: chunk.model,
-							choices: [{
-								index: 0,
-								delta: { content: `\n✓ Thinking complete\n\n` },
-								finish_reason: null
-							}]
-						});
-					}
-					
-					// Always send the original chunk
+					// Send the original chunk
 					onChunk(chunk);
 				},
           () => {
