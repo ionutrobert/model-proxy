@@ -77,7 +77,6 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
-import { AnimationManager } from '../animations/index.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -287,53 +286,34 @@ export class ModelProxyCore {
       const streamStartTime = performance.now();
       let streamSuccess = false;
 
-		const animationManager = new AnimationManager({
-			type: 'kawaii-thinking',
-			message: 'Thinking',
+		// Random kawaii faces for status header
+		const KAWAII_FACES = [
+			'(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・;)',
+			'(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+		];
+		const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+		const modelName = rankedModel.model.name;
+
+		// Send initial status header with random face and model name
+		onChunk({
+			id: `status-${Date.now()}`,
+			object: 'chat.completion.chunk',
+			created: Math.floor(Date.now() / 1000),
+			model: modelName,
+			choices: [{
+				index: 0,
+				delta: {
+					content: `\n${randomFace} Model: ${modelName}\n\n`
+				},
+				finish_reason: null
+			}]
 		});
-		
-		// Track streaming state for animation injection
-		let lastChunkTime = Date.now();
-		let lastAnimationTime = 0;
-		let chunkCount = 0;
-		const ANIMATION_INTERVAL = 2000; // Show animation every 2s during slow streaming
-		const SLOW_STREAM_THRESHOLD = 500; // Consider slow if >500ms between chunks
 
 		try {
 			await provider.executeStreaming(
 				{ ...request, model: rankedModel.model.id },
 				(chunk) => {
-					const now = Date.now();
-					chunkCount++;
-					
-					// Detect slow streaming (potential thinking/processing phase)
-					const timeSinceLastChunk = now - lastChunkTime;
-					const isSlowStream = timeSinceLastChunk > SLOW_STREAM_THRESHOLD;
-					
-					// Show animation during slow streaming phases
-					if (isSlowStream && now - lastAnimationTime > ANIMATION_INTERVAL) {
-						lastAnimationTime = now;
-						const frame = animationManager.getNextFrame();
-						
-						// Inject animation frame as content chunk
-						onChunk({
-							id: `anim-${now}`,
-							object: 'chat.completion.chunk',
-							created: Math.floor(now / 1000),
-							model: chunk.model,
-							choices: [{
-								index: 0,
-								delta: { 
-									content: `\n${frame} Processing...\n`
-								},
-								finish_reason: null
-							}]
-						});
-					}
-					
-					lastChunkTime = now;
-					
-					// Send the original chunk
+					// Send the original chunk as-is
 					onChunk(chunk);
 				},
           () => {
