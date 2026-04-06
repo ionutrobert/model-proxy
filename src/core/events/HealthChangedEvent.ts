@@ -1,11 +1,11 @@
 import { DomainEvent } from './DomainEvent';
+import type { ModelId } from '../domain/value-objects/ModelId';
 
 export class HealthChangedEvent extends DomainEvent {
   constructor(
-    readonly modelId: string,
+    readonly modelId: ModelId,
     readonly previousScore: number,
-    readonly currentScore: number,
-    readonly verdict: 'healthy' | 'degraded' | 'unhealthy'
+    readonly currentScore: number
   ) {
     super('health:changed');
   }

@@ -15,7 +15,7 @@ describe('Bug: Infinite Loop in Verification', () => {
 
   it('should enforce maxIterations limit (not infinite)', async () => {
     let callCount = 0;
-    
+
     const mockExecutor = async (): Promise<ChatCompletionResponse> => {
       callCount++;
       return {
@@ -31,6 +31,7 @@ describe('Bug: Infinite Loop in Verification', () => {
           },
           finish_reason: 'stop',
         }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       };
     };
 
@@ -52,7 +53,7 @@ describe('Bug: Infinite Loop in Verification', () => {
 
   it('should enforce timeout limit', async () => {
     let callCount = 0;
-    
+
     const mockExecutor = async (): Promise<ChatCompletionResponse> => {
       callCount++;
       await new Promise(r => setTimeout(r, 200));
@@ -69,6 +70,7 @@ describe('Bug: Infinite Loop in Verification', () => {
           },
           finish_reason: 'stop',
         }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       };
     };
 
@@ -84,7 +86,7 @@ describe('Bug: Infinite Loop in Verification', () => {
     };
 
     const start = Date.now();
-    
+
     try {
       await orchestrator.executeWithVerification(request, mockExecutor);
     } catch (error) {
