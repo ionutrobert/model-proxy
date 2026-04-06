@@ -92,7 +92,29 @@ export function isCuratedModel(modelId: string): boolean {
 
 // Get curated model info
 export function getCuratedModel(modelId: string): CuratedModel | undefined {
-  return CURATED_MODELS.find(m => modelId.includes(m.id) || m.id.includes(modelId));
+  const normalizedQuery = modelId.toLowerCase().replace(/[-_./]/g, '');
+  
+  // 1. Try exact match first
+  const exactMatch = CURATED_MODELS.find(m => m.id === modelId);
+  if (exactMatch) return exactMatch;
+  
+  // 2. Try normalized match (ignore dashes, underscores, dots, slashes, case)
+  const normalizedMatch = CURATED_MODELS.find(
+    m => m.id.toLowerCase().replace(/[-_./]/g, '') === normalizedQuery
+  );
+  if (normalizedMatch) return normalizedMatch;
+  
+  // 3. Find all substring matches
+  const substringMatches = CURATED_MODELS.filter(
+    m => modelId.includes(m.id) || m.id.includes(modelId)
+  );
+  
+  if (substringMatches.length === 0) return undefined;
+  
+  // 4. Return the match with the longest ID (most specific)
+  return substringMatches.reduce((best, current) => 
+    current.id.length > best.id.length ? current : best
+  );
 }
 
 // Check if model is known to work with tools
