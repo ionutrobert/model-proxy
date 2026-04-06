@@ -77,6 +77,7 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
+import { AnimationManager } from '../animations/index.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -286,10 +287,20 @@ export class ModelProxyCore {
       const streamStartTime = performance.now();
       let streamSuccess = false;
 
-      try {
-        await provider.executeStreaming(
+		const animationManager = new AnimationManager({
+			type: 'dots',
+			message: `Streaming from ${rankedModel.model.name}`,
+		});
+		
+		// Start animation
+		animationManager.start();
+
+		try {
+			await provider.executeStreaming(
           { ...request, model: rankedModel.model.id },
-          onChunk,
+          (chunk) => {
+            onChunk(chunk);
+          },
           () => {
             const latency = Math.round(performance.now() - streamStartTime);
             streamSuccess = true;
@@ -299,6 +310,7 @@ export class ModelProxyCore {
               success: true,
             });
             circuitBreaker.recordSuccess(rankedModel.model.provider);
+            animationManager.stop('✓ Complete');
             onComplete?.();
           },
           (error) => {
@@ -316,6 +328,7 @@ export class ModelProxyCore {
               success: false,
             });
             circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+            animationManager.stop('✗ Error');
 
             if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
               onError?.(error);
@@ -340,6 +353,7 @@ export class ModelProxyCore {
         healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
 
         circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
+        animationManager.stop('✗ Error');
 
         if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
           onError?.(error instanceof Error ? error : new Error(errorMessage));

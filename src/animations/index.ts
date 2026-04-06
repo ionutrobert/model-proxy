@@ -134,8 +134,12 @@ export class AnimationManager extends EventEmitter {
     return process.env.PROXY_ANIMATIONS_ENABLED !== 'false';
   }
 
-  // Check if output is a TTY
+  // Check if output is a TTY or Docker environment
   private isTTY(): boolean {
+    // Allow animations in Docker environments when explicitly enabled
+    if (process.env.PROXY_ANIMATIONS_ENABLED === 'true') {
+      return true;
+    }
     return process.stdout.isTTY && !process.env.CI;
   }
 
