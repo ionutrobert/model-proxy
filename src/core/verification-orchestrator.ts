@@ -43,19 +43,33 @@ export class VerificationOrchestrator {
   }
 
   /**
-   * Check if trigger phrase is present in user messages
+   * Check if trigger phrase is present in the MOST RECENT user message only
+   * This prevents false positives from feedback messages added by previous loop iterations
    */
   shouldEnableLoop(messages: ChatMessage[]): boolean {
     if (!this.config.enabled) {
       return false;
     }
 
-    return messages.some(
-      m =>
-        m.role === 'user' &&
-        typeof m.content === 'string' &&
-        m.content.includes(this.config.triggerPhrase)
-    );
+    // Only check the most recent user message
+    // This prevents the loop from triggering on feedback messages added by previous iterations
+    const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+    
+    if (!lastUserMessage) {
+      return false;
+    }
+
+    if (typeof lastUserMessage.content !== 'string') {
+      return false;
+    }
+
+    const hasTrigger = lastUserMessage.content.includes(this.config.triggerPhrase);
+    
+    if (hasTrigger) {
+      console.log(`[LOOP] Trigger phrase "${this.config.triggerPhrase}" found in last user message`);
+    }
+
+    return hasTrigger;
   }
 
   /**
