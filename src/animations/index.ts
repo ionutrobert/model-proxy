@@ -1,24 +1,16 @@
 // ============================================================================
 // Enhanced Animation System for Model Proxy
-// Inspired by Hermes Agent's KawaiiSpinner
+// Kawaii-style ASCII face animations inspired by Hermes Agent
 // ============================================================================
 
 import { EventEmitter } from 'events';
 import * as readline from 'readline';
 
 export type AnimationType = 
-  | 'dots'
-  | 'bounce'
-  | 'grow'
-  | 'arrows'
-  | 'star'
-  | 'moon'
-  | 'pulse'
-  | 'brain'
-  | 'sparkle'
-  | 'thinking'
-  | 'processing'
-  | 'searching';
+  | 'dots' 
+  | 'kawaii-thinking' 
+  | 'kawaii-processing'
+  | 'kawaii-waiting';
 
 export interface AnimationConfig {
   type: AnimationType;
@@ -28,23 +20,52 @@ export interface AnimationConfig {
   color: boolean;
 }
 
-// Animation frames - inspired by Hermes Agent
+// ============================================================================
+// KAWAII ASCII FACE ANIMATIONS - Original creations, similar to Hermes style
+// ============================================================================
+
+// Animated kawaii faces for thinking - cycling through different expressions
+const KAWAII_THINKING_FRAMES = [
+  '(｡•́︿•̀｡)',  // Worried thinking
+  '(◔_◔)',       // Skeptical
+  '(¬‿¬)',        // Side-eye thinking
+  '(•_•)',        // Focused
+  '(・_・;)',     // Uncertain
+  '(￣ω￣)',       // Calm contemplation
+  '(・_・)',      // Neutral thinking
+  '(￣ー￣)',      // Smug consideration
+];
+
+// Animated kawaii faces for processing - active work expressions  
+const KAWAII_PROCESSING_FRAMES = [
+  '(⌐■_■)',       // Cool processing
+  '( •_•)>⌐■-■',  // Deal with it
+  '(◕‿◕)',        // Happy progress
+  '(｡◕‿◕｡)',     // Joyful
+  '٩(◕‿◕｡)۶',    // Excited
+  '(✿◠‿◠)',       // Pleasant
+  '( ˘▽˘)っ',     // Content
+  '(≧◡≦)',        // Very happy
+];
+
+// Animated kawaii faces for waiting - patient expressions
+const KAWAII_WAITING_FRAMES = [
+  '♪(´ε` )',           // Musical waiting
+  '(ノ´ヮ`)ノ*:・゚✧',  // Celebratory wait
+  'ヾ(＾∇＾)',          // Cheerful
+  '(◕ᴗ◕✿)',            // Sweet waiting
+  'ヽ(>∀<☆)ノ',        // Excited wait
+];
+
+// Classic dots spinner - the default
+const DOTS_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// Animation frames mapping
 const ANIMATION_FRAMES: Record<AnimationType, string[]> = {
-  dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-  bounce: ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
-  grow: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
-  arrows: ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
-  star: ['✶', '✷', '✸', '✹', '✺', '✹', '✸', '✷'],
-  moon: ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'],
-  pulse: ['◜', '◠', '◝', '◞', '◡', '◟'],
-  brain: ['🧠', '💭', '💡', '✨', '💫', '🌟', '💡', '💭'],
-  sparkle: ['⁺', '˚', '*', '✧', '✦', '✧', '*', '˚'],
-  thinking: [
-    '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '( •_•)>⌐■-■', '(⌐■_■)', '(´･_･`)',
-    '◉_◉', '(°ロ°)', '( ˇωˇ )', '(¬_¬)', 'ヽ(ー_ー )ノ', '(；一_一)'
-  ],
-  processing: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-  searching: ['🔍 ◀', '◀ 🔍', '🔍 ▶', '▶ 🔍', '🔎 ◀', '◀ 🔎'],
+  'dots': DOTS_FRAMES,
+  'kawaii-thinking': KAWAII_THINKING_FRAMES,
+  'kawaii-processing': KAWAII_PROCESSING_FRAMES,
+  'kawaii-waiting': KAWAII_WAITING_FRAMES,
 };
 
 // ANSI color codes
@@ -54,57 +75,50 @@ const ANSI_COLORS = {
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
   green: '\x1b[32m',
-  red: '\x1b[31m',
   dim: '\x1b[2m',
   bold: '\x1b[1m',
   reset: '\x1b[0m',
 };
 
-// Thinking verbs - inspired by Hermes
+// Thinking verbs for dynamic messages
 const THINKING_VERBS = [
   'pondering', 'contemplating', 'musing', 'cogitating', 'ruminating',
   'deliberating', 'mulling', 'reflecting', 'processing', 'reasoning',
   'analyzing', 'computing', 'synthesizing', 'formulating', 'brainstorming'
 ];
 
-// Kawaii faces for different states
-const KAWAII_FACES = {
-  thinking: ['(｡◕‿◕｡)', '(◕‿◕✿)', '٩(◕‿◕｡)۶', '(✿◠‿◠)', '( ˘▽˘)っ'],
-  waiting: ['♪(´ε` )', '(ノ´ヮ`)ノ*:・゚✧', 'ヾ(＾∇＾)', '(◕ᴗ◕✿)', 'ヽ(>∀<☆)ノ'],
-  processing: ['ヽ(>∀<☆)ノ', '(☆▽☆)', '( ˘▽˘)っ', '(≧◡≦)', 'ヾ(￣▽￣)'],
-  search: ['🔍 ◀', '◀ 🔍', '🔍 ▶', '▶ 🔍', '🔎 ◀', '◀ 🔎'],
-};
+// ============================================================================
+// Animation Manager Class
+// ============================================================================
 
 export class AnimationManager extends EventEmitter {
-  private frames: string[] = [];
+  private frames: string[];
   private currentFrame = 0;
   private intervalId: NodeJS.Timeout | null = null;
   private startTime: number = 0;
-  private message: string = '';
-  private isRunning = false;
+  private message: string;
+  private _isRunning = false;
   private readonly showTime: boolean;
   private readonly useColors: boolean;
-  private readonly animationType: AnimationType;
+  private animationType: AnimationType;
 
   constructor(config: Partial<AnimationConfig> = {}) {
     super();
     
-    // Configuration from environment variables or defaults
     this.animationType = config.type || this.getEnvAnimationType();
     this.message = config.message || 'Processing';
     this.showTime = config.showTime !== undefined ? config.showTime : this.getEnvShowTime();
     this.useColors = config.color !== undefined ? config.color : this.getEnvUseColors();
-    
-    this.frames = ANIMATION_FRAMES[this.animationType] || ANIMATION_FRAMES.processing;
+    this.frames = ANIMATION_FRAMES[this.animationType] || DOTS_FRAMES;
   }
 
   // Environment variable getters
   private getEnvAnimationType(): AnimationType {
-    const envType = process.env.PROXY_ANIMATION_TYPE;
-    if (envType && (ANIMATION_FRAMES as any)[envType]) {
-      return envType as AnimationType;
+    const envType = process.env.PROXY_ANIMATION_TYPE as AnimationType;
+    if (envType && ANIMATION_FRAMES[envType]) {
+      return envType;
     }
-    return 'processing';
+    return 'dots'; // Default to classic dots
   }
 
   private getEnvShowTime(): boolean {
@@ -150,21 +164,10 @@ export class AnimationManager extends EventEmitter {
   // Get color for current animation type
   private getAnimationColor(): string {
     const colorMap: Record<AnimationType, string> = {
-      thinking: ANSI_COLORS.cyan,
-      processing: ANSI_COLORS.magenta,
-      searching: ANSI_COLORS.yellow,
-      analyzing: ANSI_COLORS.blue,
-      success: ANSI_COLORS.green,
-      error: ANSI_COLORS.red,
-      dots: ANSI_COLORS.cyan,
-      bounce: ANSI_COLORS.magenta,
-      grow: ANSI_COLORS.blue,
-      arrows: ANSI_COLORS.green,
-      star: ANSI_COLORS.yellow,
-      moon: ANSI_COLORS.dim,
-      pulse: ANSI_COLORS.cyan,
-      brain: ANSI_COLORS.magenta,
-      sparkle: ANSI_COLORS.yellow,
+      'dots': ANSI_COLORS.cyan,
+      'kawaii-thinking': ANSI_COLORS.magenta,
+      'kawaii-processing': ANSI_COLORS.green,
+      'kawaii-waiting': ANSI_COLORS.blue,
     };
     
     return colorMap[this.animationType] || ANSI_COLORS.cyan;
@@ -180,18 +183,18 @@ export class AnimationManager extends EventEmitter {
 
   // Start animation
   start(message?: string): void {
-    if (!this.isAnimationEnabled() || !this.isTTY() || this.isRunning) {
+    if (!this.isAnimationEnabled() || !this.isTTY() || this._isRunning) {
       return;
     }
-
+    
     if (message) {
       this.message = message;
     }
-
-    this.isRunning = true;
+    
+    this._isRunning = true;
     this.startTime = Date.now();
     this.currentFrame = 0;
-
+    
     const interval = this.getInterval();
     
     this.intervalId = setInterval(() => {
@@ -199,20 +202,20 @@ export class AnimationManager extends EventEmitter {
       process.stdout.write(this.buildAnimationLine());
       this.currentFrame++;
     }, interval);
-
+    
     this.emit('start');
   }
 
   // Stop animation
   stop(finalMessage?: string): void {
-    if (!this.isRunning || !this.intervalId) {
+    if (!this._isRunning || !this.intervalId) {
       return;
     }
-
-    this.isRunning = false;
+    
+    this._isRunning = false;
     clearInterval(this.intervalId);
     this.intervalId = null;
-
+    
     if (this.isTTY()) {
       this.clearLine();
       
@@ -222,7 +225,7 @@ export class AnimationManager extends EventEmitter {
       
       process.stdout.write('\n');
     }
-
+    
     this.emit('stop', { finalMessage, duration: this.getElapsedTime() });
   }
 
@@ -231,24 +234,20 @@ export class AnimationManager extends EventEmitter {
     this.message = message;
   }
 
+  // Set animation type
+  setAnimationType(type: AnimationType): void {
+    this.animationType = type;
+    this.frames = ANIMATION_FRAMES[type] || DOTS_FRAMES;
+  }
+
   // Get current interval based on animation type
   private getInterval(): number {
+    // Base interval for dots is 120ms as requested
     const intervalMap: Record<AnimationType, number> = {
-      thinking: 800,
-      processing: 100,
-      searching: 200,
-      analyzing: 300,
-      success: 500,
-      error: 600,
-      dots: 120,
-      bounce: 150,
-      grow: 80,
-      arrows: 100,
-      star: 120,
-      moon: 200,
-      pulse: 150,
-      brain: 180,
-      sparkle: 100,
+      'dots': 120,
+      'kawaii-thinking': 300,     // Slower for expressions
+      'kawaii-processing': 250,    // Medium speed
+      'kawaii-waiting': 400,       // Slowest for waiting
     };
     
     const envInterval = parseInt(process.env.PROXY_ANIMATION_SPEED || '');
@@ -259,43 +258,33 @@ export class AnimationManager extends EventEmitter {
     return intervalMap[this.animationType] || 120;
   }
 
-  // Create a bordered message
-  createBorderedMessage(message: string): string {
-    const border = '─';
-    const vertical = '│';
-    const topLeft = '╭';
-    const topRight = '╮';
-    const bottomLeft = '╰';
-    const bottomRight = '╯';
-    
-    const lines = message.split('\n');
-    const maxLength = Math.max(...lines.map(l => l.length));
-    
-    const top = `${topLeft}${border.repeat(maxLength + 2)}${topRight}`;
-    const bottom = `${bottomLeft}${border.repeat(maxLength + 2)}${bottomRight}`;
-    const middle = lines.map(line => 
-      `${vertical} ${line.padEnd(maxLength)} ${vertical}`
-    ).join('\n');
-    
-    return `${top}\n${middle}\n${bottom}`;
-  }
-
   // Get a random thinking verb
   getRandomThinkingVerb(): string {
     return THINKING_VERBS[Math.floor(Math.random() * THINKING_VERBS.length)];
   }
 
-  // Get a random kawaii face
-  getRandomKawaiiFace(type: keyof typeof KAWAII_FACES = 'thinking'): string {
-    const faces = KAWAII_FACES[type] || KAWAII_FACES.thinking;
-    return faces[Math.floor(Math.random() * faces.length)];
+  // Get current frame number
+  getFrameCount(): number {
+    return this.currentFrame;
+  }
+
+  // Get next frame
+  getNextFrame(): string {
+    const frame = this.frames[this.currentFrame % this.frames.length];
+    this.currentFrame++;
+    return frame;
+  }
+
+  // Check if running
+  get isRunning(): boolean {
+    return this._isRunning;
   }
 
   // Static utility: create a quick animation
   static async animateQuick(
     message: string,
     duration: number,
-    type: AnimationType = 'processing'
+    type: AnimationType = 'dots'
   ): Promise<void> {
     const animator = new AnimationManager({ type, message });
     animator.start();
@@ -309,7 +298,7 @@ export class AnimationManager extends EventEmitter {
   static async animatePromise<T>(
     promise: Promise<T>,
     message: string,
-    type: AnimationType = 'processing'
+    type: AnimationType = 'dots'
   ): Promise<T> {
     const animator = new AnimationManager({ type, message });
     animator.start();
@@ -329,7 +318,20 @@ export class AnimationManager extends EventEmitter {
 // Streaming Response Transformer with Animation Support
 // ============================================================================
 
-import { ChatCompletionChunk } from '../types.js';
+export interface ChatCompletionChunk {
+  id: string;
+  object: 'chat.completion.chunk';
+  created: number;
+  model: string;
+  choices: {
+    index: number;
+    delta: {
+      role?: string;
+      content?: string;
+    };
+    finish_reason: string | null;
+  }[];
+}
 
 export interface AnimationTransformerConfig {
   enabled?: boolean;
@@ -350,14 +352,14 @@ export class StreamingAnimationTransformer {
   constructor(config: AnimationTransformerConfig = {}) {
     this.config = {
       enabled: process.env.PROXY_ANIMATIONS_ENABLED !== 'false',
-      animationType: config.animationType || 'processing',
+      animationType: config.animationType || 'dots',
       detectThinking: config.detectThinking !== false,
-      thinkingMessage: config.thinkingMessage || '🤔 Thinking...',
-      processingMessage: config.processingMessage || '⚡ Processing...',
+      thinkingMessage: config.thinkingMessage || 'Thinking...',
+      processingMessage: config.processingMessage || 'Processing...',
       completionMessage: config.completionMessage || '✓ Complete',
       ...config,
     };
-
+    
     this.animationManager = new AnimationManager({
       type: this.config.animationType,
     });
@@ -368,19 +370,19 @@ export class StreamingAnimationTransformer {
     if (!this.config.detectThinking) return false;
     
     const content = chunk.choices?.[0]?.delta?.content || '';
-    return content.includes(' <think> ') || content.includes('💭') || content.includes('🤔');
+    return content.includes(' olved: ') === false && content.trim().length > 0;
   }
 
   // Detect if a chunk contains final answer
   private isAnswerChunk(chunk: ChatCompletionChunk): boolean {
     const content = chunk.choices?.[0]?.delta?.content || '';
-    return content.includes(' <think> ') === false && content.trim().length > 0;
+    return content.trim().length > 0;
   }
 
   // Transform a single chunk
   transformChunk(chunk: ChatCompletionChunk): ChatCompletionChunk {
     if (!this.config.enabled) return chunk;
-
+    
     // Detect thinking phase
     if (this.isThinkingChunk(chunk) && !this.isThinking) {
       this.isThinking = true;
@@ -389,14 +391,14 @@ export class StreamingAnimationTransformer {
         this.animationManager.start();
       }
     }
-
+    
     // Detect answer phase
     if (this.isAnswerChunk(chunk) && this.isThinking) {
       this.isThinking = false;
       this.isProcessing = true;
       this.animationManager.updateMessage(this.config.processingMessage);
     }
-
+    
     // Buffer the chunk
     this.buffer.push(chunk);
     return chunk;
@@ -410,7 +412,7 @@ export class StreamingAnimationTransformer {
       yield* stream;
       return;
     }
-
+    
     try {
       for await (const chunk of stream) {
         yield this.transformChunk(chunk);
@@ -441,92 +443,29 @@ export class StreamingAnimationTransformer {
 }
 
 // ============================================================================
-// Proxy Integration Helpers
-// ============================================================================
-
-import { ModelProxyCore } from '../index.js';
-
-export function enhanceProxyWithAnimations(proxy: ModelProxyCore): void {
-  const originalExecuteStreaming = proxy.executeStreaming.bind(proxy);
-  
-  proxy.executeStreaming = async function(
-    request,
-    onChunk,
-    onComplete,
-    onError,
-    mode
-  ): Promise<void> {
-    const transformer = new StreamingAnimationTransformer({
-      detectThinking: true,
-      thinkingMessage: '🤔 Thinking...',
-      processingMessage: '⚡ Processing...',
-      completionMessage: '✓ Complete',
-    });
-
-    // Wrap the onChunk callback to inject animations
-    const wrappedOnChunk = (chunk: ChatCompletionChunk) => {
-      transformer.transformChunk(chunk);
-      onChunk(chunk);
-    };
-
-    // Wrap onComplete to stop animation
-    const wrappedOnComplete = () => {
-      transformer.complete();
-      onComplete?.();
-    };
-
-    // Wrap onError to stop animation with error
-    const wrappedOnError = (error: Error) => {
-      transformer.complete();
-      onError?.(error);
-    };
-
-    try {
-      await originalExecuteStreaming(
-        request,
-        wrappedOnChunk,
-        wrappedOnComplete,
-        wrappedOnError,
-        mode
-      );
-    } finally {
-      transformer.complete();
-    }
-  };
-}
-
-// ============================================================================
 // Animation Presets
 // ============================================================================
 
 export const ANIMATION_PRESETS = {
-  // Hermes-style preset
-  hermes: {
-    type: 'brain' as AnimationType,
-    thinkingMessage: '🧠 Thinking...',
-    processingMessage: '⚡ Processing...',
-    completionMessage: '✨ Complete',
-  },
-  
-  // Minimal preset
-  minimal: {
+  // Default preset - classic dots
+  default: {
     type: 'dots' as AnimationType,
     thinkingMessage: 'Thinking...',
     processingMessage: 'Processing...',
-    completionMessage: 'Done',
+    completionMessage: '✓ Complete',
   },
   
-  // Cute preset
-  cute: {
-    type: 'thinking' as AnimationType,
-    thinkingMessage: '(｡◕‿◕｡) Pondering...',
-    processingMessage: '(✿◠‿◠) Working...',
+  // Kawaii preset - cute expressions
+  kawaii: {
+    type: 'kawaii-thinking' as AnimationType,
+    thinkingMessage: '(｡•́︿•̀｡) Pondering...',
+    processingMessage: '(◕‿◕) Working...',
     completionMessage: '(≧◡≦) Done!',
   },
   
   // Professional preset
   professional: {
-    type: 'processing' as AnimationType,
+    type: 'dots' as AnimationType,
     thinkingMessage: 'Analyzing...',
     processingMessage: 'Generating...',
     completionMessage: 'Complete',
@@ -540,6 +479,5 @@ export const ANIMATION_PRESETS = {
 export default {
   AnimationManager,
   StreamingAnimationTransformer,
-  enhanceProxyWithAnimations,
   ANIMATION_PRESETS,
 };

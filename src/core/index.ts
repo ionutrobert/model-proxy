@@ -77,7 +77,6 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
-import { StreamingAnimationTransformer } from '../animations/streaming-transformer.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
