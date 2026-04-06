@@ -288,17 +288,82 @@ export class ModelProxyCore {
       let streamSuccess = false;
 
 		const animationManager = new AnimationManager({
-			type: 'dots',
-			message: `Streaming from ${rankedModel.model.name}`,
+			type: 'kawaii-thinking',
+			message: 'Thinking',
 		});
 		
-		// Start animation (shows in server logs)
-		animationManager.start();
+		// Track thinking state for animation injection
+		let isThinking = false;
+		let lastAnimationTime = 0;
+		const ANIMATION_INTERVAL = 800; // Update animation every 800ms during thinking
 
 		try {
 			await provider.executeStreaming(
 				{ ...request, model: rankedModel.model.id },
 				(chunk) => {
+					const now = Date.now();
+					const delta = chunk.choices?.[0]?.delta as any;
+					
+					// Detect thinking phase - check for reasoning_content or thinking tags
+					const hasReasoning = delta?.reasoning_content || 
+					                     delta?.content?.includes('  ');
+					
+					// Start thinking animation
+					if (hasReasoning && !isThinking) {
+						isThinking = true;
+						lastAnimationTime = now;
+						// Send initial animation frame
+						const frame = animationManager.getNextFrame();
+						onChunk({
+							id: `anim-${now}`,
+							object: 'chat.completion.chunk',
+							created: Math.floor(now / 1000),
+							model: chunk.model,
+							choices: [{
+								index: 0,
+								delta: { content: `\n${frame} Thinking...\n` },
+								finish_reason: null
+							}]
+						});
+					}
+					
+					// Continue thinking animation
+					if (isThinking && now - lastAnimationTime > ANIMATION_INTERVAL) {
+						lastAnimationTime = now;
+						const frame = animationManager.getNextFrame();
+						onChunk({
+							id: `anim-${now}`,
+							object: 'chat.completion.chunk',
+							created: Math.floor(now / 1000),
+							model: chunk.model,
+							choices: [{
+								index: 0,
+								delta: { content: `${frame}\n` },
+								finish_reason: null
+							}]
+						});
+					}
+					
+					// Detect end of thinking (actual content starts)
+					if (isThinking && delta?.content && 
+					    !delta.reasoning_content &&
+					    !delta.content.includes('  ')) {
+						isThinking = false;
+						// Send completion marker
+						onChunk({
+							id: `anim-done-${now}`,
+							object: 'chat.completion.chunk',
+							created: Math.floor(now / 1000),
+							model: chunk.model,
+							choices: [{
+								index: 0,
+								delta: { content: `\n✓ Thinking complete\n\n` },
+								finish_reason: null
+							}]
+						});
+					}
+					
+					// Always send the original chunk
 					onChunk(chunk);
 				},
           () => {
