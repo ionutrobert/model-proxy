@@ -276,11 +276,38 @@ const ranked = healthyModels.map(model => {
     return candidates[0] || null;
   }
 
-  getFallbackChain(rankedModels: RankedModel[], count: number = 3): RankedModel[] {
+  getFallbackChain(
+    rankedModels: RankedModel[],
+    count: number = 3,
+    conversationType?: 'tool' | 'reasoning' | 'general'
+  ): RankedModel[] {
     const chain: RankedModel[] = [];
     const usedProviders = new Set<string>();
 
-    for (const model of rankedModels) {
+    // Weight models by conversation type (from multi-agent-patterns)
+    const weightedModels = [...rankedModels].sort((a, b) => {
+      let scoreA = a.stabilityScore;
+      let scoreB = b.stabilityScore;
+
+      // Boost tool-capable models for tool conversations
+      if (conversationType === 'tool') {
+        const aToolCapable = a.model.supportsFunctionCalling ? 50 : 0;
+        const bToolCapable = b.model.supportsFunctionCalling ? 50 : 0;
+        scoreA += aToolCapable;
+        scoreB += bToolCapable;
+      }
+      // Boost thinking models for reasoning tasks
+      else if (conversationType === 'reasoning') {
+        const aCurated = getCuratedModel(a.model.id);
+        const bCurated = getCuratedModel(b.model.id);
+        if (aCurated?.isThinking) scoreA += 30;
+        if (bCurated?.isThinking) scoreB += 30;
+      }
+
+      return scoreB - scoreA;
+    });
+
+    for (const model of weightedModels) {
       if (chain.length >= count) break;
 
       if (!usedProviders.has(model.model.provider) || chain.length < 2) {
@@ -290,7 +317,7 @@ const ranked = healthyModels.map(model => {
     }
 
     if (chain.length < count) {
-      for (const model of rankedModels) {
+      for (const model of weightedModels) {
         if (chain.length >= count) break;
         if (!chain.includes(model)) {
           chain.push(model);
@@ -299,6 +326,48 @@ const ranked = healthyModels.map(model => {
     }
 
     return chain;
+  }
+
+  /**
+   * Compress context for model switching (from agent-orchestration patterns)
+   * Preserves important content while reducing token usage
+   */
+  compressContext(content: string, maxTokens: number = 1000): string {
+    if (content.length <= maxTokens * 4) return content;
+
+    const parts: string[] = [];
+    let remaining = content;
+
+    // 1. Extract and preserve code blocks (high importance)
+    const codeBlockRegex = /```[\s\S]*?```/g;
+    let match: RegExpExecArray | null = codeBlockRegex.exec(content);
+    while (match !== null) {
+      parts.push(match[0]);
+      match = codeBlockRegex.exec(content);
+    }
+    remaining = remaining.replace(codeBlockRegex, '');
+
+    // 2. Preserve last 500 chars (immediate context)
+    const lastPart = remaining.slice(-500);
+    parts.unshift(lastPart);
+
+    // 3. Extract key decisions/reasoning (lines with "because", "therefore", etc.)
+    const decisionPatterns = [
+      /\b(because|therefore|so|thus|hence|reason|decision|conclusion)\b.*$/gim,
+    ];
+    for (const pattern of decisionPatterns) {
+      let decisionMatch: RegExpExecArray | null = pattern.exec(remaining);
+      while (decisionMatch !== null) {
+        if (!parts.includes(decisionMatch[0])) {
+          parts.push(decisionMatch[0]);
+        }
+        decisionMatch = pattern.exec(remaining);
+      }
+    }
+
+    // 4. Join with separators and truncate to target
+    const compressed = parts.join('\n\n[...]\n\n');
+    return compressed.slice(0, maxTokens * 4);
   }
 
   filterByProvider(rankedModels: RankedModel[], providers: string[]): RankedModel[] {

@@ -624,6 +624,8 @@ private async executeStreamingBase(
     throw new Error('No streaming model available');
   }
 
+  // Note: conversationHasTools will be defined later in the code
+  // We'll determine conversation type after it's declared
   const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
   const triedModels: Set<string> = new Set();
   let accumulatedContent = '';
@@ -655,6 +657,8 @@ const isStatusMessage = (content: string): boolean => {
   };
 
   const conversationHasTools = hasToolMessages(request.messages);
+  let toolRetryCount = 0; // Track retries for tool conversations
+  const maxToolRetries = 3;
 
   const isContentTruncated = (content: string, modelName: string): boolean => {
     if (!content || content.length < 100) return false;
@@ -735,20 +739,23 @@ const isStatusMessage = (content: string): boolean => {
     lastModelName = fullModelPath;
     isFirstModel = false;
 
-    // Build request - only inject clean accumulated content, not status messages
-    let modelRequest = { ...request, model: rankedModel.model.id };
-    if (accumulatedContentClean.length > 0) {
-      // Use only clean content for continuation
-      const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output (last 1500 chars):\n---\n${accumulatedContentClean.slice(-1500)}\n---\nContinue exactly from where it stopped, maintaining the same format and style. Do NOT repeat the content above.]`;
-      modelRequest = {
-        ...modelRequest,
-        messages: [
-          ...request.messages,
-          { role: 'assistant', content: accumulatedContentClean },
-          { role: 'user', content: continuationPrompt }
-        ]
-      };
-    }
+  // Build request - only inject clean accumulated content, not status messages
+  let modelRequest = { ...request, model: rankedModel.model.id };
+  if (accumulatedContentClean.length > 0) {
+    // Use context compression from agent-orchestration patterns
+    const compressedContent = smartModelSelector.compressContext(accumulatedContentClean, 1000);
+    
+    const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output (compressed):\n---\n${compressedContent}\n---\nContinue exactly from where it stopped, maintaining the same format and style. Do NOT repeat the content above.]`;
+    
+    modelRequest = {
+      ...modelRequest,
+      messages: [
+        ...request.messages,
+        { role: 'assistant', content: accumulatedContentClean },
+        { role: 'user', content: continuationPrompt }
+      ]
+    };
+  }
 
     try {
       await provider.executeStreaming(
@@ -773,33 +780,33 @@ const isStatusMessage = (content: string): boolean => {
 		const hasContent = modelPartialContent.trim().length > 0;
 		const isTruncated = isContentTruncated(modelPartialContent, rankedModel.model.name);
 
-		if (isTruncated) {
-			console.warn(`⚠️ ${rankedModel.model.name} returned truncated content - triggering fallback`);
-			streamSuccess = false;
-			healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-				latency,
-				statusCode: '200',
-				success: false,
-			});
-			circuitBreaker.recordFailure(rankedModel.model.provider, 'Truncated content detected');
-			return;
-		}
+  if (isTruncated) {
+    console.warn(`⚠️ ${rankedModel.model.name} returned truncated content - triggering fallback`);
+    streamSuccess = false;
+    healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+      latency,
+      statusCode: '200',
+      success: false,
+    });
+    circuitBreaker.recordModelFailure(rankedModel.model.id, 'Truncated content detected');
+    return;
+  }
 
-		streamSuccess = true;
-		if (!hasContent) {
-			console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
-		}
-      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-        latency,
-        statusCode: '200',
-        success: hasContent,
-      });
-      this.updateRankingsFromRealLatency();
-      if (hasContent) {
-			circuitBreaker.recordSuccess(rankedModel.model.provider);
-		} else {
-			circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content in streaming');
-		}
+  streamSuccess = true;
+  if (!hasContent) {
+    console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
+  }
+  healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+    latency,
+    statusCode: '200',
+    success: hasContent,
+  });
+  this.updateRankingsFromRealLatency();
+  if (hasContent) {
+    circuitBreaker.recordModelSuccess(rankedModel.model.id);
+  } else {
+    circuitBreaker.recordModelFailure(rankedModel.model.id, 'Empty content in streaming');
+  }
 		onComplete?.();
 	},
         (error) => {
@@ -811,45 +818,74 @@ const isStatusMessage = (content: string): boolean => {
           else if (msg.includes('429')) { statusCode = '429'; }
           else if (msg.includes('404')) { statusCode = '404'; }
           else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
-    circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
+      circuitBreaker.recordModelFailure(rankedModel.model.id, msg);
 
-    const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-    if (nextModel && !conversationHasTools) {
-      const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
-      (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
-      `🔄 Continuing...\n\n`;
+      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+      if (nextModel && !conversationHasTools) {
+        const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
+          (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
+          `🔄 Continuing...\n\n`;
 
-      console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
+        console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
 
-      onChunk({
-        id: `switch-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: fullModelPath,
-        choices: [{
-          index: 0,
-          delta: { content: switchMsg },
-          finish_reason: null
-        }]
-      });
-    } else if (conversationHasTools) {
-      console.error(`[TOOL-ERROR] Cannot switch models during tool conversation. Error: ${msg}`);
-      onChunk({
-        id: `tool-error-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: fullModelPath,
-        choices: [{
-          index: 0,
-          delta: { content: `\n\n❌ Tool conversation error: ${msg}. Cannot switch models during tool calls.\n\n` },
-          finish_reason: 'stop'
-        }]
-      });
-      onError?.(error);
-    } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-      onError?.(error);
-    }
+        onChunk({
+          id: `switch-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: fullModelPath,
+          choices: [{
+            index: 0,
+            delta: { content: switchMsg },
+            finish_reason: null
+          }]
+        });
+      } else if (conversationHasTools) {
+        // Retry logic for tool conversations (from multi-agent-patterns)
+        if (toolRetryCount < maxToolRetries) {
+          toolRetryCount++;
+          const retryDelay = Math.min(1000 * Math.pow(2, toolRetryCount), 10000);
+          
+          console.log(`[TOOL-RETRY] Retrying ${fullModelPath} in ${retryDelay}ms (attempt ${toolRetryCount}/${maxToolRetries})`);
+          
+          onChunk({
+            id: `tool-retry-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: fullModelPath,
+            choices: [{
+              index: 0,
+              delta: { 
+                content: `\n\n⚠️ Tool conversation error: ${msg}\n` +
+                  `🔄 Retrying with same model (attempt ${toolRetryCount}/${maxToolRetries})...\n\n`
+              },
+              finish_reason: null
+            }]
+          });
+          
+          // Note: The retry will happen automatically in the next iteration
+          // of the fallback chain loop because we're not marking streamSuccess = true
+        } else {
+          console.error(`[TOOL-ERROR] Max retries (${maxToolRetries}) reached for tool conversation. Error: ${msg}`);
+          onChunk({
+            id: `tool-error-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: fullModelPath,
+            choices: [{
+              index: 0,
+              delta: { 
+                content: `\n\n❌ Tool conversation error after ${maxToolRetries} retries: ${msg}\n` +
+                  `Unable to continue. Please retry the conversation manually.\n\n`
+              },
+              finish_reason: 'stop'
+            }]
+          });
+          onError?.(error);
+        }
+      } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+        onError?.(error);
+      }
   }
       );
 

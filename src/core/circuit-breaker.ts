@@ -12,6 +12,8 @@ import { getConfig } from './config.js';
 
 export class CircuitBreaker {
   private health: Map<ProviderId, ProviderHealth> = new Map();
+  // Per-model circuit breaker tracking (from llm-app-patterns)
+  private modelHealth: Map<string, ProviderHealth> = new Map();
 
   /**
    * Get current circuit state for a provider
@@ -48,11 +50,60 @@ export class CircuitBreaker {
   }
 
   /**
+   * Check if specific model is available (per-model circuit breaker)
+   * From llm-app-patterns: Per-model tracking prevents cascade failures
+   */
+  isModelAvailable(modelId: string): boolean {
+    const providerAvailable = this.isAvailable(this.getProviderForModel(modelId));
+    if (!providerAvailable) return false;
+    
+    const modelState = this.getModelState(modelId);
+    return modelState !== 'open';
+  }
+
+  /**
+   * Get circuit state for a specific model
+   */
+  getModelState(modelId: string): CircuitState {
+    const model = this.modelHealth.get(modelId);
+    if (!model) return 'closed';
+
+    if (model.status === 'open') {
+      const config = getConfig();
+      const resetTimeout = config.preferences.circuitBreakerResetMs;
+
+      if (model.lastFailure &&
+        Date.now() - model.lastFailure > resetTimeout) {
+        this.modelHealth.set(modelId, {
+          ...model,
+          status: 'half-open',
+          consecutiveSuccesses: 0,
+        });
+        return 'half-open';
+      }
+    }
+
+    return model.status;
+  }
+
+  /**
+   * Extract provider ID from model ID (best effort)
+   */
+  private getProviderForModel(modelId: string): ProviderId {
+    // Common patterns: "provider/model-name"
+    if (modelId.includes('/')) {
+      return modelId.split('/')[0] as ProviderId;
+    }
+    // Default to 'openrouter' if no provider prefix
+    return 'openrouter';
+  }
+
+  /**
    * Record a successful request
    */
   recordSuccess(providerId: ProviderId): void {
     const provider = this.health.get(providerId);
-    
+
     if (!provider) {
       this.health.set(providerId, {
         providerId,
@@ -94,6 +145,56 @@ export class CircuitBreaker {
   }
 
   /**
+   * Record a successful request for a specific model
+   */
+  recordModelSuccess(modelId: string): void {
+    const model = this.modelHealth.get(modelId);
+
+    if (!model) {
+      this.modelHealth.set(modelId, {
+        providerId: this.getProviderForModel(modelId),
+        status: 'closed',
+        failureCount: 0,
+        lastSuccess: Date.now(),
+        consecutiveSuccesses: 1,
+      });
+      // Also record provider success
+      this.recordSuccess(this.getProviderForModel(modelId));
+      return;
+    }
+
+    const consecutiveSuccesses = model.consecutiveSuccesses + 1;
+
+    if (model.status === 'half-open') {
+      if (consecutiveSuccesses >= 2) {
+        this.modelHealth.set(modelId, {
+          ...model,
+          status: 'closed',
+          failureCount: 0,
+          consecutiveSuccesses,
+          lastSuccess: Date.now(),
+        });
+      } else {
+        this.modelHealth.set(modelId, {
+          ...model,
+          consecutiveSuccesses,
+          lastSuccess: Date.now(),
+        });
+      }
+    } else {
+      this.modelHealth.set(modelId, {
+        ...model,
+        failureCount: 0,
+        consecutiveSuccesses,
+        lastSuccess: Date.now(),
+      });
+    }
+
+    // Also record provider success
+    this.recordSuccess(this.getProviderForModel(modelId));
+  }
+
+  /**
    * Record a failed request
    */
   recordFailure(providerId: ProviderId, error: string): void {
@@ -114,7 +215,7 @@ export class CircuitBreaker {
     }
 
     const newFailureCount = provider.failureCount + 1;
-    
+
     // If in half-open state, any failure reopens circuit
     if (provider.status === 'half-open') {
       this.health.set(providerId, {
@@ -137,6 +238,58 @@ export class CircuitBreaker {
       lastFailure: now,
       consecutiveSuccesses: 0,
     });
+  }
+
+  /**
+   * Record a failed request for a specific model
+   */
+  recordModelFailure(modelId: string, error: string): void {
+    const model = this.modelHealth.get(modelId);
+    const now = Date.now();
+    const config = getConfig();
+    const threshold = config.preferences.circuitBreakerThreshold;
+
+    if (!model) {
+      this.modelHealth.set(modelId, {
+        providerId: this.getProviderForModel(modelId),
+        status: 'closed',
+        failureCount: 1,
+        lastFailure: now,
+        consecutiveSuccesses: 0,
+      });
+      // Also record provider failure
+      this.recordFailure(this.getProviderForModel(modelId), error);
+      return;
+    }
+
+    const newFailureCount = model.failureCount + 1;
+
+    // If in half-open state, any failure reopens circuit
+    if (model.status === 'half-open') {
+      this.modelHealth.set(modelId, {
+        ...model,
+        status: 'open',
+        failureCount: newFailureCount,
+        lastFailure: now,
+        consecutiveSuccesses: 0,
+      });
+      this.recordFailure(this.getProviderForModel(modelId), error);
+      return;
+    }
+
+    // Otherwise check if threshold reached
+    const newStatus: CircuitState = newFailureCount >= threshold ? 'open' : model.status;
+
+    this.modelHealth.set(modelId, {
+      ...model,
+      status: newStatus,
+      failureCount: newFailureCount,
+      lastFailure: now,
+      consecutiveSuccesses: 0,
+    });
+
+    // Also record provider failure
+    this.recordFailure(this.getProviderForModel(modelId), error);
   }
 
   /**
@@ -202,6 +355,13 @@ export class CircuitBreaker {
    */
   getProviderHealth(providerId: ProviderId): ProviderHealth | undefined {
     return this.health.get(providerId);
+  }
+
+  /**
+   * Get health status for a specific model
+   */
+  getModelHealth(modelId: string): ProviderHealth | undefined {
+    return this.modelHealth.get(modelId);
   }
 
   /**
