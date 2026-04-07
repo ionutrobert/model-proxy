@@ -229,9 +229,11 @@ export class ModelProxyCore {
           const latency = Math.round(performance.now() - startTime);
 
           // Check for empty content - content can be string, array, or null
+          // But if tool_calls are present, that's valid too
           const content = response.choices?.[0]?.message?.content;
+          const toolCalls = response.choices?.[0]?.message?.tool_calls;
           const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
-          const hasEmptyContent = contentStr.trim().length === 0;
+          const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
 
           if (hasEmptyContent) {
             console.warn(`⚠️ Model ${modelId} returned empty content, trying fallback`);
@@ -753,17 +755,19 @@ private async executeStreamingBase(
 
 try {
       console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
-      const modelStartTime = performance.now();
+const modelStartTime = performance.now();
       const response = await provider.execute({
-...request,
+        ...request,
         model: rankedModel.model.id,
       });
       const latency = Math.round(performance.now() - modelStartTime);
 
       // Check for empty content - content can be string, array, or null
+      // But if tool_calls are present, that's valid too
       const content = response.choices?.[0]?.message?.content;
+      const toolCalls = response.choices?.[0]?.message?.tool_calls;
       const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
-      const hasEmptyContent = contentStr.trim().length === 0;
+      const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
 
       if (hasEmptyContent) {
         console.warn(`⚠️ ${rankedModel.model.name} returned empty content, treating as failure`);
