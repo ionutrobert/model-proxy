@@ -646,9 +646,15 @@ private async executeStreamingBase(
     /Switching to/, /Model:/, /Preserving/,
   ];
 
-  const isStatusMessage = (content: string): boolean => {
+const isStatusMessage = (content: string): boolean => {
     return STATUS_PATTERNS.some(pattern => pattern.test(content));
   };
+
+  const hasToolMessages = (messages: any[]): boolean => {
+    return messages.some(m => m.role === 'tool' || (m.role === 'assistant' && m.tool_calls?.length > 0));
+  };
+
+  const conversationHasTools = hasToolMessages(request.messages);
 
   const isContentTruncated = (content: string, modelName: string): boolean => {
     if (!content || content.length < 100) return false;
@@ -805,32 +811,46 @@ private async executeStreamingBase(
           else if (msg.includes('429')) { statusCode = '429'; }
           else if (msg.includes('404')) { statusCode = '404'; }
           else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
-          circuitBreaker.recordFailure(rankedModel.model.provider, msg);
+healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
+    circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
-          const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-          if (nextModel) {
-            const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
-              (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
-              `🔄 Continuing...\n\n`;
-            
-            console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
-            
-            onChunk({
-              id: `switch-${Date.now()}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: fullModelPath,
-              choices: [{
-                index: 0,
-                delta: { content: switchMsg },
-                finish_reason: null
-              }]
-            });
-          } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-            onError?.(error);
-          }
-        }
+    const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+    if (nextModel && !conversationHasTools) {
+      const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
+      (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
+      `🔄 Continuing...\n\n`;
+
+      console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
+
+      onChunk({
+        id: `switch-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: fullModelPath,
+        choices: [{
+          index: 0,
+          delta: { content: switchMsg },
+          finish_reason: null
+        }]
+      });
+    } else if (conversationHasTools) {
+      console.error(`[TOOL-ERROR] Cannot switch models during tool conversation. Error: ${msg}`);
+      onChunk({
+        id: `tool-error-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: fullModelPath,
+        choices: [{
+          index: 0,
+          delta: { content: `\n\n❌ Tool conversation error: ${msg}. Cannot switch models during tool calls.\n\n` },
+          finish_reason: 'stop'
+        }]
+      });
+      onError?.(error);
+    } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
+      onError?.(error);
+    }
+  }
       );
 
       if (streamSuccess) {
@@ -848,11 +868,11 @@ private async executeStreamingBase(
         });
         circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
 
-        const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-        if (nextModel) {
-          const switchMsg = `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
-            (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars.\n` : '') +
-            `🔄 Continuing...\n\n`;
+const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+    if (nextModel && !conversationHasTools) {
+      const switchMsg = `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
+      (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars.\n` : '') +
+      `🔄 Continuing...\n\n`;
           
           onChunk({
             id: `switch-${Date.now()}`,
@@ -882,12 +902,12 @@ private async executeStreamingBase(
       healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
       circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-      if (nextModel) {
+const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+      if (nextModel && !conversationHasTools) {
         const switchMsg = `\n\n⚠️ Model [${providerName}] ${fullModelPath} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.id}...\n` +
-          (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
-          `🔄 Continuing...\n\n`;
-        
+        (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
+        `🔄 Continuing...\n\n`;
+
         onChunk({
           id: `switch-${Date.now()}`,
           object: 'chat.completion.chunk',
@@ -899,8 +919,23 @@ private async executeStreamingBase(
             finish_reason: null
           }]
         });
-      }
-	continue;
+      } else if (conversationHasTools) {
+        console.error(`[TOOL-ERROR] Cannot switch models during tool conversation. Error: ${errorMessage}`);
+        onChunk({
+          id: `tool-error-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: fullModelPath,
+          choices: [{
+            index: 0,
+            delta: { content: `\n\n❌ Tool conversation error: ${errorMessage}. Cannot switch models during tool calls.\n\n` },
+finish_reason: 'stop'
+      }]
+      });
+      if (onError) onError(error instanceof Error ? error : new Error(errorMessage));
+      throw error instanceof Error ? error : new Error(errorMessage);
+    }
+    continue;
     }
   }
 
