@@ -102,6 +102,8 @@ export class ModelProxyCore {
   private healthResults: HealthCheckResult[] = [];
   private allModels: ModelConfig[] = [];
   private config: ProxyConfig;
+  private lastRankingUpdate: number = 0;
+  private rankingUpdateInterval: number = 30000; // Recompute every 30s minimum
 
   constructor(config: ProxyConfig) {
     this.config = config;
@@ -176,6 +178,55 @@ export class ModelProxyCore {
           `Latency: ${rm.health.latency}ms`
         );
       }
+    }
+  }
+
+  /**
+   * Recompute rankings based on actual request performance
+   * Called when significant latency deviation is detected
+   */
+  private updateRankingsFromRealLatency(): void {
+    const now = Date.now();
+    if (now - this.lastRankingUpdate < this.rankingUpdateInterval) {
+      return; // Don't update too frequently
+    }
+
+    // Build updated health results from actual request data
+    const updatedHealthResults: HealthCheckResult[] = [];
+    
+    for (const model of this.allModels) {
+      const history = healthTracker.getHealth(model.id);
+      if (history && history.metrics.totalRequests > 0) {
+        const avgLatency = history.metrics.avgLatency;
+        const verdict = history.verdict;
+        
+        updatedHealthResults.push({
+          modelId: model.id,
+          providerId: model.provider,
+          status: verdict === 'Not Active' || verdict === 'Unstable' ? 'unhealthy' : 'healthy',
+          latency: Math.round(avgLatency),
+          timestamp: now,
+        });
+      }
+    }
+
+    // If we have enough real data, recompute rankings
+    if (updatedHealthResults.length >= Math.min(3, this.allModels.length)) {
+      const oldTop = this.rankedModels[0]?.model.id;
+      
+      this.rankedModels = smartModelSelector.rankModels(
+        this.allModels,
+        updatedHealthResults,
+        this.config.preferences
+      );
+
+      const newTop = this.rankedModels[0]?.model.id;
+      
+      if (oldTop && newTop && oldTop !== newTop) {
+        console.log(`📊 Rankings updated: ${oldTop} → ${newTop} (based on real latency)`);
+      }
+      
+      this.lastRankingUpdate = now;
     }
   }
 
@@ -269,12 +320,13 @@ export class ModelProxyCore {
             return this.executeWithFallback(request, fallbackChain);
           }
 
-          healthTracker.recordRequest(modelId, modelConfig.provider, {
-            latency,
-            statusCode: '200',
-            success: true,
-          });
-          return response;
+      healthTracker.recordRequest(modelId, modelConfig.provider, { 
+        latency, 
+        statusCode: '200', 
+        success: true, 
+      });
+      this.updateRankingsFromRealLatency();
+      return response;
         } catch (error) {
           const latency = Math.round(performance.now() - startTime);
           const msg = error instanceof Error ? error.message : String(error);
@@ -703,12 +755,13 @@ private async executeStreamingBase(
 		if (!hasContent) {
 			console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
 		}
-		healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-			latency,
-			statusCode: '200',
-			success: hasContent,
-		});
-		if (hasContent) {
+      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+        latency,
+        statusCode: '200',
+        success: hasContent,
+      });
+      this.updateRankingsFromRealLatency();
+      if (hasContent) {
 			circuitBreaker.recordSuccess(rankedModel.model.provider);
 		} else {
 			circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content in streaming');
@@ -870,6 +923,7 @@ const modelStartTime = performance.now();
         statusCode: '200',
         success: true,
       });
+      this.updateRankingsFromRealLatency();
       console.log(`✓ Success with ${rankedModel.model.name} (${latency}ms)`);
       return response;
     } catch (error) {
