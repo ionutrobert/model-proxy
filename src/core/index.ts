@@ -584,23 +584,38 @@ private async executeStreamingBase(
 	];
 
 	const isContentTruncated = (content: string, modelName: string): boolean => {
-		if (!content || content.length < 50) return false;
+		if (!content || content.length < 100) return false;
 		const trimmed = content.trim();
-		const lastChars = trimmed.slice(-50);
-		const lastLine = trimmed.split('\n').pop() || '';
 
-		const unclosedCodeBlocks = (trimmed.match(/```/g) || []).length % 2 !== 0;
-		const unclosedBrackets = /[{(\[]\s*$/.test(lastLine) || /[{(\[][^})\]]*$/.test(lastChars);
-		const endsMidWord = /[a-zA-Z0-9]$/.test(trimmed) && !/[.!?。！？]$/.test(trimmed);
-		const endsMidSentence = !/[.!?。！？\n]\s*$/.test(trimmed) && trimmed.length > 200;
-		const kimiPattern = /kimi/i.test(modelName || '');
-
-		if (kimiPattern && endsMidSentence) {
-			console.log(`[KIMI-DETECT] Possible truncation detected for ${modelName}`);
+		// Check for unclosed code blocks (strongest signal)
+		const codeBlockMatches = trimmed.match(/```/g) || [];
+		const unclosedCodeBlocks = codeBlockMatches.length % 2 !== 0;
+		if (unclosedCodeBlocks) {
+			console.log(`[TRUNCATE] Unclosed code block detected for ${modelName}`);
 			return true;
 		}
 
-		return unclosedCodeBlocks || unclosedBrackets || (endsMidWord && endsMidSentence);
+		// Check for unclosed brackets at very end (strong signal)
+		const lastLine = trimmed.split('\n').pop() || '';
+		if (/[{(\[]\s*$/.test(lastLine)) {
+			console.log(`[TRUNCATE] Unclosed bracket at end for ${modelName}`);
+			return true;
+		}
+
+		// Kimi-specific: detect mid-sentence endings (they have known issues)
+		const kimiPattern = /kimi/i.test(modelName || '');
+		if (kimiPattern) {
+			const lastChars = trimmed.slice(-30);
+			// More specific: ends without punctuation AND has recent incomplete structure
+			const endsAbruptly = !/[.!?。！？"`']\s*$/.test(trimmed);
+			const hasRecentColon = /[:\->]\s*$/.test(lastChars);
+			if (endsAbruptly && trimmed.length > 500) {
+				console.log(`[KIMI-DETECT] Possible truncation for ${modelName}`);
+				return true;
+			}
+		}
+
+		return false;
 	};
 
 	for (const rankedModel of fallbackChain) {
