@@ -650,40 +650,39 @@ private async executeStreamingBase(
     return STATUS_PATTERNS.some(pattern => pattern.test(content));
   };
 
-	const isContentTruncated = (content: string, modelName: string): boolean => {
-		if (!content || content.length < 100) return false;
-		const trimmed = content.trim();
+  const isContentTruncated = (content: string, modelName: string): boolean => {
+    if (!content || content.length < 100) return false;
+    const trimmed = content.trim();
 
-		// Check for unclosed code blocks (strongest signal)
-		const codeBlockMatches = trimmed.match(/```/g) || [];
-		const unclosedCodeBlocks = codeBlockMatches.length % 2 !== 0;
-		if (unclosedCodeBlocks) {
-			console.log(`[TRUNCATE] Unclosed code block detected for ${modelName}`);
-			return true;
-		}
+    // Check for unclosed code blocks (strongest signal)
+    const codeBlockMatches = trimmed.match(/```/g) || [];
+    const unclosedCodeBlocks = codeBlockMatches.length % 2 !== 0;
+    if (unclosedCodeBlocks) {
+      console.log(`[TRUNCATE] Unclosed code block detected for ${modelName}`);
+      return true;
+    }
 
-		// Check for unclosed brackets at very end (strong signal)
-		const lastLine = trimmed.split('\n').pop() || '';
-		if (/[{(\[]\s*$/.test(lastLine)) {
-			console.log(`[TRUNCATE] Unclosed bracket at end for ${modelName}`);
-			return true;
-		}
+    // Check for unclosed brackets at very end (strong signal)
+    const lastLine = trimmed.split('\n').pop() || '';
+    if (/[{(\[]\s*$/.test(lastLine)) {
+      console.log(`[TRUNCATE] Unclosed bracket at end for ${modelName}`);
+      return true;
+    }
 
-		// Kimi-specific: detect mid-sentence endings (they have known issues)
-		const kimiPattern = /kimi/i.test(modelName || '');
-		if (kimiPattern) {
-			const lastChars = trimmed.slice(-30);
-			// More specific: ends without punctuation AND has recent incomplete structure
-			const endsAbruptly = !/[.!?。！？"`']\s*$/.test(trimmed);
-			const hasRecentColon = /[:\->]\s*$/.test(lastChars);
-			if (endsAbruptly && trimmed.length > 500) {
-				console.log(`[KIMI-DETECT] Possible truncation for ${modelName}`);
-				return true;
-			}
-		}
+    // Only flag as truncated if there's CLEAR evidence of interruption
+    // 1. Ends mid-word (like "think" instead of "thinking")
+    // 2. AND doesn't end with any punctuation or natural break
+    // 3. AND is substantial content (>800 chars)
+    const endsMidWord = /[a-z]$/.test(trimmed) && !/[.!?。！？\n]\s*$/.test(trimmed);
+    const hasNaturalEnd = /[.!?。！？]\s*$/.test(trimmed) || /\n\s*$/.test(trimmed);
+    
+    if (endsMidWord && !hasNaturalEnd && trimmed.length > 800) {
+      console.log(`[TRUNCATE] Possible mid-word truncation for ${modelName}`);
+      return true;
+    }
 
-		return false;
-	};
+    return false;
+  };
 
 	for (const rankedModel of fallbackChain) {
 		if (triedModels.has(rankedModel.model.id)) continue;
