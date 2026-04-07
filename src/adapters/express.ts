@@ -233,11 +233,17 @@ export function createChatRoutes(proxy: ModelProxyCore) {
             },
             mode
           );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Streaming failed';
-          res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
-          res.end();
-        }
+	} catch (error) {
+		const message = error instanceof Error ? error.message : 'Streaming failed';
+		res.write(`data: ${JSON.stringify({
+			error: {
+				message,
+				type: 'server_error',
+				code: 'no_model_available'
+			}
+		})}\n\n`);
+		res.end();
+	}
         return;
       }
 
