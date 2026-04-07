@@ -56,6 +56,10 @@ export {
   smartModelSelector,
 } from './smart-selector.js';
 
+// Adaptive Scoring & State Management
+export { adaptiveModelScorer } from './adaptive-scorer.js';
+export { conversationStateManager } from './conversation-state.js';
+
 // Verification Orchestrator
 export {
   VerificationOrchestrator,
@@ -95,6 +99,8 @@ import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
 import { VerificationOrchestrator } from './verification-orchestrator.js';
 import { injectVerificationPrompt } from './prompt-injector.js';
+import { conversationStateManager, ConversationCheckpoint } from './conversation-state.js';
+import { adaptiveModelScorer } from './adaptive-scorer.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -694,22 +700,44 @@ const isStatusMessage = (content: string): boolean => {
     return false;
   };
 
-	for (const rankedModel of fallbackChain) {
-		if (triedModels.has(rankedModel.model.id)) continue;
-		triedModels.add(rankedModel.model.id);
+for (const rankedModel of fallbackChain) {
+  if (triedModels.has(rankedModel.model.id)) continue;
+  triedModels.add(rankedModel.model.id);
 
-    const provider = this.providers.get(rankedModel.model.provider);
-    if (!provider) continue;
+  const provider = this.providers.get(rankedModel.model.provider);
+  if (!provider) continue;
 
-    const streamStartTime = performance.now();
-    let streamSuccess = false;
-    let chunkCount = 0;
-    let modelPartialContent = '';
-    let modelPartialContentClean = ''; // Clean content for this model only
+  const streamStartTime = performance.now();
+  let streamSuccess = false;
+  let chunkCount = 0;
+  let modelPartialContent = '';
+  let modelPartialContentClean = ''; // Clean content for this model only
 
-    const fullModelPath = rankedModel.model.id;
-    const providerName = rankedModel.model.provider;
-    const modelChanged = lastModelName && lastModelName !== fullModelPath;
+  const fullModelPath = rankedModel.model.id;
+  const providerName = rankedModel.model.provider;
+  const modelChanged = lastModelName && lastModelName !== fullModelPath;
+
+  // Save checkpoint before starting (from autonomous-agent-patterns)
+  let checkpointId: string | null = null;
+  if (conversationHasTools && isFirstModel) {
+    checkpointId = conversationStateManager.saveCheckpoint(
+      `session-${Date.now()}`,
+      {
+        modelId: fullModelPath,
+        messages: request.messages,
+        toolCalls: request.messages
+          .filter((m: any) => m.role === 'assistant' && m.tool_calls)
+          .flatMap((m: any) => m.tool_calls),
+        partialContent: '',
+        metadata: {
+          provider: providerName,
+          latency: 0,
+          chunkCount: 0
+        }
+      }
+    );
+    console.log(`[CHECKPOINT] Saved checkpoint ${checkpointId} for tool conversation`);
+  }
 
     if (isFirstModel || modelChanged) {
       const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
@@ -802,12 +830,26 @@ const isStatusMessage = (content: string): boolean => {
     success: hasContent,
   });
   this.updateRankingsFromRealLatency();
+  
+  // Record success for adaptive scoring (from multi-agent-patterns)
+  adaptiveModelScorer.recordSuccess(fullModelPath, latency, {
+    hadToolCalls: conversationHasTools,
+    contextWindowUsed: modelPartialContent.length / 4 // Rough token estimate
+  });
+  
   if (hasContent) {
-    circuitBreaker.recordModelSuccess(rankedModel.model.id);
+    circuitBreaker.recordModelSuccess(fullModelPath);
   } else {
-    circuitBreaker.recordModelFailure(rankedModel.model.id, 'Empty content in streaming');
+    circuitBreaker.recordModelFailure(fullModelPath, 'Empty content in streaming');
   }
-		onComplete?.();
+  
+  // Clear checkpoint on success
+  if (checkpointId) {
+    conversationStateManager.deleteCheckpoint(checkpointId);
+    console.log(`[CHECKPOINT] Cleared checkpoint ${checkpointId} on success`);
+  }
+  
+  onComplete?.();
 	},
         (error) => {
           const latency = Math.round(performance.now() - streamStartTime);
@@ -820,6 +862,11 @@ const isStatusMessage = (content: string): boolean => {
           else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
       healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
       circuitBreaker.recordModelFailure(rankedModel.model.id, msg);
+      
+      // Record failure for adaptive scoring
+      adaptiveModelScorer.recordFailure(fullModelPath, msg, {
+        hadToolCalls: conversationHasTools
+      });
 
       const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
       if (nextModel && !conversationHasTools) {
