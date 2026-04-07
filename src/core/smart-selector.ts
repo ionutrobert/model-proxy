@@ -77,34 +77,40 @@ export class SmartModelSelector {
       return true;
     });
 
-    const ranked = healthyModels.map(model => {
-      const health = healthByModel.get(model.id)!;
-      
-      // Use curated model info if available
-      const curated = getCuratedModel(model.id);
-      const tierWeight = TIER_WEIGHTS[curated?.tier || model.tier];
+const ranked = healthyModels.map(model => {
+    const health = healthByModel.get(model.id)!;
 
-      const maxLatency = preferences.maxLatencyMs;
-      const latencyScore = Math.max(0, 30 * (1 - health.latency / maxLatency));
+    // Use curated model info if available
+    const curated = getCuratedModel(model.id);
+    const tierWeight = TIER_WEIGHTS[curated?.tier || model.tier];
 
-      const contextWindow = curated?.contextWindow || model.contextWindow;
-      const contextScore = Math.min(20, (contextWindow / 128000) * 20);
+    const maxLatency = preferences.maxLatencyMs;
+    const latencyScore = Math.max(0, 30 * (1 - health.latency / maxLatency));
 
-      const supportsFnCalling = curated?.supportsFunctionCalling ?? model.supportsFunctionCalling ?? false;
-      const supportsVis = curated?.supportsVision ?? model.supportsVision ?? false;
-      
-      const capabilityScore =
-        (model.supportsStreaming ? 5 : 0) +
-        (supportsFnCalling ? 10 : 0) +
-        (supportsVis ? 5 : 0);
+    const contextWindow = curated?.contextWindow || model.contextWindow;
+    const contextScore = Math.min(20, (contextWindow / 128000) * 20);
 
-      // Boost score for curated models
-      const curatedBoost = curated ? 15 : 0;
-      
-      // Boost score for models known to work with tools
-      const toolBoost = supportsToolCalling(model.id) ? 10 : 0;
+    const supportsFnCalling = curated?.supportsFunctionCalling ?? model.supportsFunctionCalling ?? false;
+    const supportsVis = curated?.supportsVision ?? model.supportsVision ?? false;
+    const isThinking = curated?.isThinking ?? false;
 
-      const stabilityScore = tierWeight + latencyScore + contextScore + capabilityScore + curatedBoost + toolBoost;
+    const capabilityScore = 
+      (model.supportsStreaming ? 5 : 0) +
+      (supportsFnCalling ? 10 : 0) +
+      (supportsVis ? 5 : 0);
+
+    // SWE score (coding quality) - max 25 points based on SWE-bench score
+    const sweScore = curated?.swe_score ?? 0;
+    const sweScoreBoost = Math.min(25, sweScore * 0.25);
+
+    // Thinking boost for complex reasoning tasks
+    const thinkingBoost = isThinking ? 8 : 0;
+
+    // Context window boost for coding (larger = better for big files)
+    const codingContextBoost = Math.min(10, (contextWindow - 32000) / 20000);
+
+    const stabilityScore = tierWeight + latencyScore + contextScore + capabilityScore + 
+      sweScoreBoost + thinkingBoost + codingContextBoost;
 
       return {
         model,

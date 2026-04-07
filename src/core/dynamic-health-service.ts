@@ -6,6 +6,7 @@ import {
 } from './types.js';
 import { circuitBreaker } from './circuit-breaker.js';
 import { modelDiscovery, DiscoveredModel } from './model-discovery.js';
+import { CURATED_MODELS, getCuratedModel, CuratedModel } from './curated-models.js';
 
 interface CachedHealth {
   results: HealthCheckResult[];
@@ -139,35 +140,64 @@ export class DynamicHealthService {
  });
  }
 
+private getModelCapabilities(modelId: string): CuratedModel | null {
+    const curated = getCuratedModel(modelId);
+    if (curated) return curated;
+    const normalizedQuery = modelId.toLowerCase().replace(/[-_./]/g, '');
+    const matching = CURATED_MODELS.find(
+      m => m.id.toLowerCase().replace(/[-_./]/g, '') === normalizedQuery ||
+           modelId.toLowerCase().includes(m.id.toLowerCase()) ||
+           m.id.toLowerCase().includes(normalizedQuery)
+    );
+    return matching || null;
+  }
+
+  private calculateModelScore(model: ModelConfig): number {
+    const caps = this.getModelCapabilities(model.id);
+    const id = model.id.toLowerCase();
+    let score = 0;
+    const hasToolCalling = (caps?.supportsFunctionCalling ?? this.infersToolCalling(id));
+    const hasThinking = (caps?.isThinking ?? (id.includes('r1') || id.includes('qwq') || id.includes('thinking')));
+    const contextWindow = (caps?.contextWindow ?? model.contextWindow) ?? 128000;
+    const tier = (caps?.tier ?? model.tier) ?? 'B';
+    const sweScore = (caps?.swe_score ?? this.estimateSweScore(id)) ?? 20;
+
+    const tierWeights: Record<string, number> = { 'S+': 100, 'S': 80, 'A+': 60, 'A': 40, 'A-': 30, 'B+': 20, 'B': 10, 'C': 0 };
+    score += tierWeights[tier] ?? 0;
+    score += sweScore;
+    if (hasToolCalling) score += 25;
+    if (hasThinking) score += 15;
+    if (contextWindow >= 200000) score += 10;
+    else if (contextWindow >= 128000) score += 5;
+    return score;
+  }
+
+  private infersToolCalling(modelId: string): boolean {
+    const id = modelId.toLowerCase();
+    const toolPatterns = ['instruct', 'chat', 'v3', 'v2', 'llama-3', 'llama-4', 'qwen3', 'qwen2', 'deepseek', 'glm', 'kimi', 'nemotron', 'mistral'];
+    return toolPatterns.some(p => id.includes(p));
+  }
+
+  private estimateSweScore(modelId: string): number {
+    const id = modelId.toLowerCase();
+    if (id.includes('qwen3-coder') || id.includes('devstral') || id.includes('glm-5')) return 70;
+    if (id.includes('qwen3-235b') || id.includes('deepseek-v3.2')) return 68;
+    if (id.includes('minimax-m2.5')) return 80;
+    if (id.includes('minimax-m2')) return 70;
+    if (id.includes('kimi-k2') || id.includes('step-3.5')) return 65;
+    if (id.includes('r1')) return 60;
+    if (id.includes('qwq')) return 50;
+    if (id.includes('405b') || id.includes('llama-3.3-70b')) return 40;
+    if (id.includes('70b')) return 35;
+    if (id.includes('8b')) return 25;
+    return 20;
+  }
+
   private prioritizeModelsForCheck(models: ModelConfig[]): ModelConfig[] {
-    const priorityOrder = [
-      // Top-tier models (S+ with high SWE scores)
-      'minimax-m2.5', 'minimaxai/minimax', // 80.2 SWE score
-      'step-3.5-flash', 'stepfun-ai/', // 74.4 SWE score  
-      'minimax-m2.1', // 74.0 SWE score
-      'kimi-k2.5', 'kimi-k2', 'moonshotai/kimi', // Kimi models
-      'glm5', 'glm-5', 'glm4', 'thudm/', // GLM models
-      'devstral-2', 'mistralai/devstral', // 72.2 SWE score
-      'qwen3-coder-480b', 'qwen3-coder', 'qwen/qwen3-coder', // 70.6 SWE score
-      'qwen3-235b', 'qwen/qwen3-235b', // 70.0 SWE score
-      'deepseek-v3', 'deepseek-r1', 'deepseek-ai/', // DeepSeek models
-      'mistral-large-3', 'mistral-large', 'mistral-medium',
-      'llama-3.1-405b', 'llama-3.3-70b', 'meta/llama-3.1-70b',
-      'nemotron-ultra', 'nemotron-253b', 'nvidia/llama-3.1-nemotron',
-      'qwen3', 'qwen2.5', 'qwq',
-      'llama-3.1-70b', 'llama-3.1-8b',
-    ];
-
     return models.sort((a, b) => {
-      const aPriority = priorityOrder.findIndex(p => a.id.toLowerCase().includes(p));
-      const bPriority = priorityOrder.findIndex(p => b.id.toLowerCase().includes(p));
-
-      if (aPriority !== -1 && bPriority !== -1) return aPriority - bPriority;
-      if (aPriority !== -1) return -1;
-      if (bPriority !== -1) return 1;
-
-      const tierOrder = { 'S+': 0, 'S': 1, 'A+': 2, 'A': 3, 'A-': 4, 'B+': 5, 'B': 6, 'C': 7 };
-      return tierOrder[a.tier] - tierOrder[b.tier];
+      const scoreA = this.calculateModelScore(a);
+      const scoreB = this.calculateModelScore(b);
+      return scoreB - scoreA;
     });
   }
 
