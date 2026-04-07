@@ -141,13 +141,20 @@ export class DynamicHealthService {
 
   private prioritizeModelsForCheck(models: ModelConfig[]): ModelConfig[] {
     const priorityOrder = [
-      'kimi-k2.5', 'kimi-k2', 'moonshotai/kimi',
-      'glm5', 'glm-5', 'glm4', 'thudm/',
-      'deepseek-v3', 'deepseek-r1', 'deepseek-ai/',
+      // Top-tier models (S+ with high SWE scores)
+      'minimax-m2.5', 'minimaxai/minimax', // 80.2 SWE score
+      'step-3.5-flash', 'stepfun-ai/', // 74.4 SWE score  
+      'minimax-m2.1', // 74.0 SWE score
+      'kimi-k2.5', 'kimi-k2', 'moonshotai/kimi', // Kimi models
+      'glm5', 'glm-5', 'glm4', 'thudm/', // GLM models
+      'devstral-2', 'mistralai/devstral', // 72.2 SWE score
+      'qwen3-coder-480b', 'qwen3-coder', 'qwen/qwen3-coder', // 70.6 SWE score
+      'qwen3-235b', 'qwen/qwen3-235b', // 70.0 SWE score
+      'deepseek-v3', 'deepseek-r1', 'deepseek-ai/', // DeepSeek models
+      'mistral-large-3', 'mistral-large', 'mistral-medium',
       'llama-3.1-405b', 'llama-3.3-70b', 'meta/llama-3.1-70b',
-      'nemotron-ultra', 'nemotron-70b', 'nvidia/llama-3.1-nemotron',
-      'mistral-large', 'mistral-medium',
-      'qwen3', 'qwen2.5',
+      'nemotron-ultra', 'nemotron-253b', 'nvidia/llama-3.1-nemotron',
+      'qwen3', 'qwen2.5', 'qwq',
       'llama-3.1-70b', 'llama-3.1-8b',
     ];
 
