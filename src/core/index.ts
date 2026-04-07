@@ -230,12 +230,35 @@ export class ModelProxyCore {
 
           // Check for empty content - content can be string, array, or null
           // But if tool_calls are present, that's valid too
-          const content = response.choices?.[0]?.message?.content;
-          const toolCalls = response.choices?.[0]?.message?.tool_calls;
-          const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
-          const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
+	const content = response.choices?.[0]?.message?.content;
+	const toolCalls = response.choices?.[0]?.message?.tool_calls;
+	const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
+	const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
 
-          if (hasEmptyContent) {
+	const isTruncated = (() => {
+		if (!contentStr || contentStr.length < 50) return false;
+		const trimmed = contentStr.trim();
+		const lastChars = trimmed.slice(-50);
+		const lastLine = trimmed.split('\n').pop() || '';
+		const unclosedCodeBlocks = (trimmed.match(/```/g) || []).length % 2 !== 0;
+		const unclosedBrackets = /[{(\[]\s*$/.test(lastLine) || /[{(\[][^})\]]*$/.test(lastChars);
+		const endsMidWord = /[a-zA-Z0-9]$/.test(trimmed) && !/[.!?。！？]$/.test(trimmed);
+		const endsMidSentence = !/[.!?。！？\n]\s*$/.test(trimmed) && trimmed.length > 200;
+		return unclosedCodeBlocks || unclosedBrackets || (endsMidWord && endsMidSentence);
+	})();
+
+	if (isTruncated) {
+		console.warn(`⚠️ Model ${modelId} returned truncated content, trying fallback`);
+		healthTracker.recordRequest(modelId, modelConfig.provider, {
+			latency,
+			statusCode: '200',
+			success: false,
+		});
+		const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
+		return this.executeWithFallback(request, fallbackChain);
+	}
+
+	if (hasEmptyContent) {
             console.warn(`⚠️ Model ${modelId} returned empty content, trying fallback`);
             healthTracker.recordRequest(modelId, modelConfig.provider, {
               latency,
@@ -560,6 +583,26 @@ private async executeStreamingBase(
 		'(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
 	];
 
+	const isContentTruncated = (content: string, modelName: string): boolean => {
+		if (!content || content.length < 50) return false;
+		const trimmed = content.trim();
+		const lastChars = trimmed.slice(-50);
+		const lastLine = trimmed.split('\n').pop() || '';
+
+		const unclosedCodeBlocks = (trimmed.match(/```/g) || []).length % 2 !== 0;
+		const unclosedBrackets = /[{(\[]\s*$/.test(lastLine) || /[{(\[][^})\]]*$/.test(lastChars);
+		const endsMidWord = /[a-zA-Z0-9]$/.test(trimmed) && !/[.!?。！？]$/.test(trimmed);
+		const endsMidSentence = !/[.!?。！？\n]\s*$/.test(trimmed) && trimmed.length > 200;
+		const kimiPattern = /kimi/i.test(modelName || '');
+
+		if (kimiPattern && endsMidSentence) {
+			console.log(`[KIMI-DETECT] Possible truncation detected for ${modelName}`);
+			return true;
+		}
+
+		return unclosedCodeBlocks || unclosedBrackets || (endsMidWord && endsMidSentence);
+	};
+
 	for (const rankedModel of fallbackChain) {
 		if (triedModels.has(rankedModel.model.id)) continue;
 		triedModels.add(rankedModel.model.id);
@@ -622,26 +665,39 @@ private async executeStreamingBase(
           }
           onChunk(chunk);
 },
-      () => {
-        const latency = Math.round(performance.now() - streamStartTime);
-        streamSuccess = true;
-        // Check if we got meaningful content - empty responses should be marked as failures
-        const success = modelPartialContent.trim().length > 0;
-        if (!success) {
-          console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
-        }
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-          latency,
-          statusCode: '200',
-          success,
-        });
-        if (success) {
-          circuitBreaker.recordSuccess(rankedModel.model.provider);
-        } else {
-          circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content in streaming');
-        }
-        onComplete?.();
-      },
+	() => {
+		const latency = Math.round(performance.now() - streamStartTime);
+		const hasContent = modelPartialContent.trim().length > 0;
+		const isTruncated = isContentTruncated(modelPartialContent, rankedModel.model.name);
+
+		if (isTruncated) {
+			console.warn(`⚠️ ${rankedModel.model.name} returned truncated content - triggering fallback`);
+			streamSuccess = false;
+			healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+				latency,
+				statusCode: '200',
+				success: false,
+			});
+			circuitBreaker.recordFailure(rankedModel.model.provider, 'Truncated content detected');
+			return;
+		}
+
+		streamSuccess = true;
+		if (!hasContent) {
+			console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
+		}
+		healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+			latency,
+			statusCode: '200',
+			success: hasContent,
+		});
+		if (hasContent) {
+			circuitBreaker.recordSuccess(rankedModel.model.provider);
+		} else {
+			circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content in streaming');
+		}
+		onComplete?.();
+	},
       (error) => {
           const latency = Math.round(performance.now() - streamStartTime);
           streamSuccess = false;
