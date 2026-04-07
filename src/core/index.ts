@@ -227,6 +227,23 @@ export class ModelProxyCore {
         try {
           const response = await provider.execute({ ...request, model: modelId });
           const latency = Math.round(performance.now() - startTime);
+
+          // Check for empty content - content can be string, array, or null
+          const content = response.choices?.[0]?.message?.content;
+          const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
+          const hasEmptyContent = contentStr.trim().length === 0;
+
+          if (hasEmptyContent) {
+            console.warn(`⚠️ Model ${modelId} returned empty content, trying fallback`);
+            healthTracker.recordRequest(modelId, modelConfig.provider, {
+              latency,
+              statusCode: '200',
+              success: false,
+            });
+            const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
+            return this.executeWithFallback(request, fallbackChain);
+          }
+
           healthTracker.recordRequest(modelId, modelConfig.provider, {
             latency,
             statusCode: '200',
@@ -592,19 +609,28 @@ private async executeStreamingBase(
             accumulatedContent += content;
           }
           onChunk(chunk);
-        },
-        () => {
-          const latency = Math.round(performance.now() - streamStartTime);
-          streamSuccess = true;
-          healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-            latency,
-            statusCode: '200',
-            success: true,
-          });
+},
+      () => {
+        const latency = Math.round(performance.now() - streamStartTime);
+        streamSuccess = true;
+        // Check if we got meaningful content - empty responses should be marked as failures
+        const success = modelPartialContent.trim().length > 0;
+        if (!success) {
+          console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
+        }
+        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+          latency,
+          statusCode: '200',
+          success,
+        });
+        if (success) {
           circuitBreaker.recordSuccess(rankedModel.model.provider);
-          onComplete?.();
-        },
-        (error) => {
+        } else {
+          circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content in streaming');
+        }
+        onComplete?.();
+      },
+      (error) => {
           const latency = Math.round(performance.now() - streamStartTime);
           streamSuccess = false;
           let statusCode = 'ERR';
@@ -725,24 +751,41 @@ private async executeStreamingBase(
       const provider = this.providers.get(rankedModel.model.provider);
       if (!provider) continue;
 
-      try {
-        console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
-        const modelStartTime = performance.now();
-        const response = await provider.execute({
-          ...request,
-          model: rankedModel.model.id,
-        });
-        const latency = Math.round(performance.now() - modelStartTime);
+try {
+      console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
+      const modelStartTime = performance.now();
+      const response = await provider.execute({
+...request,
+        model: rankedModel.model.id,
+      });
+      const latency = Math.round(performance.now() - modelStartTime);
 
-        circuitBreaker.recordSuccess(rankedModel.model.provider);
+      // Check for empty content - content can be string, array, or null
+      const content = response.choices?.[0]?.message?.content;
+      const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
+      const hasEmptyContent = contentStr.trim().length === 0;
+
+      if (hasEmptyContent) {
+        console.warn(`⚠️ ${rankedModel.model.name} returned empty content, treating as failure`);
         healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
           latency,
           statusCode: '200',
-          success: true,
+          success: false,
         });
-        console.log(`✓ Success with ${rankedModel.model.name} (${latency}ms)`);
-        return response;
-      } catch (error) {
+        circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content response');
+        errors.push(`${rankedModel.model.name}: Empty content`);
+        continue; // Try next model in fallback chain
+      }
+
+      circuitBreaker.recordSuccess(rankedModel.model.provider);
+      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+        latency,
+        statusCode: '200',
+        success: true,
+      });
+      console.log(`✓ Success with ${rankedModel.model.name} (${latency}ms)`);
+      return response;
+    } catch (error) {
         const latency = Math.round(performance.now() - startTime);
         const errorMessage = error instanceof Error ? error.message : String(error);
         errors.push(`${rankedModel.model.name}: ${errorMessage}`);
