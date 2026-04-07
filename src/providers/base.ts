@@ -201,9 +201,18 @@ const mappedChoices = choicesData.map((choice: unknown, index: number) => {
   content,
   };
 
-  // Pass through tool_calls if present
-  if (messageObj.tool_calls) {
-  message.tool_calls = messageObj.tool_calls as ToolCall[];
+  // Normalize tool_calls - NVIDIA NIM/Kimi returns numeric IDs, OpenAI spec requires strings
+  if (messageObj.tool_calls && Array.isArray(messageObj.tool_calls)) {
+    message.tool_calls = (messageObj.tool_calls as any[]).map((tc: any) => ({
+      ...tc,
+      id: typeof tc.id === 'number' ? String(tc.id) : tc.id,
+      function: tc.function ? {
+        ...tc.function,
+        arguments: typeof tc.function.arguments === 'object' 
+          ? JSON.stringify(tc.function.arguments) 
+          : tc.function.arguments
+      } : tc.function
+    })) as ToolCall[];
   }
 
   // Pass through reasoning_content if present (for thinking models)
@@ -268,21 +277,32 @@ try {
   
   const choices = parsed.choices || [];
 
-const mappedChoices = choices.map((choice: any) => {
-  const delta = choice.delta || {};
-  
-  // Check if tool_calls present in delta
-  const hasToolCalls = delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
-  
-  // DON'T merge reasoning_content into content - they are separate streams
-  // reasoning_content is internal thinking, content is the actual response
-  // Let the client decide how to display them
-  
-  return {
-  index: choice.index || 0,
-  delta: delta,
-  finish_reason: choice.finish_reason || null,
-  };
+  const mappedChoices = choices.map((choice: any) => {
+    const delta = choice.delta || {};
+
+    // Normalize tool_calls in streaming chunks - NVIDIA NIM/Kimi returns numeric IDs
+    if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+      delta.tool_calls = delta.tool_calls.map((tc: any) => ({
+        ...tc,
+        id: typeof tc.id === 'number' ? String(tc.id) : tc.id,
+        function: tc.function ? {
+          ...tc.function,
+          arguments: typeof tc.function.arguments === 'object'
+            ? JSON.stringify(tc.function.arguments)
+            : tc.function.arguments
+        } : tc.function
+      }));
+    }
+
+    // DON'T merge reasoning_content into content - they are separate streams
+    // reasoning_content is internal thinking, content is the actual response
+    // Let the client decide how to display them
+
+    return {
+      index: choice.index || 0,
+      delta: delta,
+      finish_reason: choice.finish_reason || null,
+    };
   });
 
  return {
@@ -396,37 +416,53 @@ const mappedChoices = choices.map((choice: any) => {
     return new Error(message);
   }
 
-/**
- * Build request body for provider
- */
+  /**
+   * Build request body for provider
+   */
   protected buildRequestBody(request: ChatCompletionRequest): unknown {
-   const body: Record<string, unknown> = {
-     model: request.model,
-     messages: request.messages,
-     temperature: request.temperature ?? 0.7,
-     stream: request.stream ?? false,
-     top_p: request.top_p ?? 1,
-     frequency_penalty: request.frequency_penalty ?? 0,
-     presence_penalty: request.presence_penalty ?? 0,
-     stop: request.stop,
-     user: request.user,
-     n: request.n ?? 1,
-   };
+    // Normalize messages - NVIDIA NIM expects string content, OpenAI may send arrays
+    const normalizedMessages = request.messages.map(msg => {
+      if (typeof msg.content === 'string') {
+        return msg;
+      }
+      if (Array.isArray(msg.content)) {
+        // Convert array content to string (text parts only)
+        const textParts = msg.content
+          .filter((part: any) => part.type === 'text')
+          .map((part: any) => part.text)
+          .join('\n');
+        return { ...msg, content: textParts || '' };
+      }
+      return msg;
+    });
 
-  // Only set max_tokens if client explicitly requested it
-  // Don't hardcode - let upstream provider use its own default
-  if (request.max_tokens !== undefined) {
-    body.max_tokens = request.max_tokens;
+    const body: Record<string, unknown> = {
+      model: request.model,
+      messages: normalizedMessages,
+      temperature: request.temperature ?? 0.7,
+      stream: request.stream ?? false,
+      top_p: request.top_p ?? 1,
+      frequency_penalty: request.frequency_penalty ?? 0,
+      presence_penalty: request.presence_penalty ?? 0,
+      stop: request.stop,
+      user: request.user,
+      n: request.n ?? 1,
+    };
+
+    // Only set max_tokens if client explicitly requested it
+    // Don't hardcode - let upstream provider use its own default
+    if (request.max_tokens !== undefined) {
+      body.max_tokens = request.max_tokens;
+    }
+
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools;
+    }
+
+    if (request.tool_choice) {
+      body.tool_choice = request.tool_choice;
+    }
+
+    return body;
   }
-
-  if (request.tools && request.tools.length > 0) {
-    body.tools = request.tools;
-  }
-
-  if (request.tool_choice) {
-    body.tool_choice = request.tool_choice;
-  }
-
-  return body;
-}
 }
