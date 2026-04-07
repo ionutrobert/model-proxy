@@ -549,43 +549,53 @@ private async executeStreamingBase(
     throw new Error('No streaming model available');
   }
 
-  const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
-  const triedModels: Set<string> = new Set();
-  let accumulatedContent = '';
-  let lastModelName = '';
+	const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
+	const triedModels: Set<string> = new Set();
+	let accumulatedContent = '';
+	let lastModelName = '';
+	let isFirstModel = true;
 
-  const KAWAII_FACES = [
-    '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
-    '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-  ];
+	const KAWAII_FACES = [
+		'(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+		'(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+	];
 
-  for (const rankedModel of fallbackChain) {
-    if (triedModels.has(rankedModel.model.id)) continue;
-    triedModels.add(rankedModel.model.id);
+	for (const rankedModel of fallbackChain) {
+		if (triedModels.has(rankedModel.model.id)) continue;
+		triedModels.add(rankedModel.model.id);
 
-    const provider = this.providers.get(rankedModel.model.provider);
-    if (!provider) continue;
+		const provider = this.providers.get(rankedModel.model.provider);
+		if (!provider) continue;
 
-    const streamStartTime = performance.now();
-    let streamSuccess = false;
-    let chunkCount = 0;
-    let modelPartialContent = '';
+		const streamStartTime = performance.now();
+		let streamSuccess = false;
+		let chunkCount = 0;
+		let modelPartialContent = '';
 
-    const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-    const modelName = rankedModel.model.name;
-    lastModelName = modelName;
+		const modelName = rankedModel.model.id;
+		const modelChanged = lastModelName && lastModelName !== modelName;
 
-    onChunk({
-      id: `status-${Date.now()}`,
-      object: 'chat.completion.chunk',
-      created: Math.floor(Date.now() / 1000),
-      model: modelName,
-      choices: [{
-        index: 0,
-        delta: { content: `\n${randomFace} Model: ${modelName}\n\n` },
-        finish_reason: null
-      }]
-    });
+		if (isFirstModel || modelChanged) {
+			const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+			const statusMsg = isFirstModel
+				? `\n${randomFace} ${modelName}\n\n`
+				: `\n${randomFace} Fallback: ${modelName}\n\n`;
+
+			onChunk({
+				id: `status-${Date.now()}`,
+				object: 'chat.completion.chunk',
+				created: Math.floor(Date.now() / 1000),
+				model: modelName,
+				choices: [{
+					index: 0,
+					delta: { content: statusMsg },
+					finish_reason: null
+				}]
+			});
+		}
+
+		lastModelName = modelName;
+		isFirstModel = false;
 
     let modelRequest = { ...request, model: rankedModel.model.id };
     if (accumulatedContent.length > 0) {
