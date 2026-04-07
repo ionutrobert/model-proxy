@@ -615,20 +615,22 @@ private async executeStreamingBase(
 		let chunkCount = 0;
 		let modelPartialContent = '';
 
-		const modelName = rankedModel.model.id;
-		const modelChanged = lastModelName && lastModelName !== modelName;
+		const fullModelPath = rankedModel.model.id;
+		const providerName = rankedModel.model.provider;
+		const modelChanged = lastModelName && lastModelName !== fullModelPath;
 
 		if (isFirstModel || modelChanged) {
 			const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+			const displayPath = `[${providerName}] ${fullModelPath}`;
 			const statusMsg = isFirstModel
-				? `\n${randomFace} ${modelName}\n\n`
-				: `\n${randomFace} Fallback: ${modelName}\n\n`;
+				? `\n${randomFace} ${displayPath}\n\n`
+				: `\n${randomFace} Fallback: ${displayPath}\n\n`;
 
 			onChunk({
 				id: `status-${Date.now()}`,
 				object: 'chat.completion.chunk',
 				created: Math.floor(Date.now() / 1000),
-				model: modelName,
+				model: fullModelPath,
 				choices: [{
 					index: 0,
 					delta: { content: statusMsg },
@@ -637,7 +639,7 @@ private async executeStreamingBase(
 			});
 		}
 
-		lastModelName = modelName;
+		lastModelName = fullModelPath;
 		isFirstModel = false;
 
     let modelRequest = { ...request, model: rankedModel.model.id };
@@ -710,24 +712,24 @@ private async executeStreamingBase(
           healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
           circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
-          const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-          if (nextModel) {
-            onChunk({
-              id: `switch-${Date.now()}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: modelName,
-              choices: [{
-                index: 0,
-                delta: {
-                  content: `\n\n⚠️ Model ${modelName} encountered an error. Switching to ${nextModel.model.name}...\n` +
-                    (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
-                    `🔄 Continuing...\n\n`
-                },
-                finish_reason: null
-              }]
-            });
-            console.log(`[MODEL-SWITCH] ${modelName} → ${nextModel.model.name} (preserved ${modelPartialContent.length} chars)`);
+	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+			if (nextModel) {
+				onChunk({
+					id: `switch-${Date.now()}`,
+					object: 'chat.completion.chunk',
+					created: Math.floor(Date.now() / 1000),
+					model: fullModelPath,
+					choices: [{
+						index: 0,
+						delta: {
+							content: `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
+							(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
+							`🔄 Continuing...\n\n`
+						},
+						finish_reason: null
+					}]
+				});
+				console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContent.length} chars)`);
           } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
             onError?.(error);
           }
@@ -749,25 +751,25 @@ private async executeStreamingBase(
         });
         circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
 
-        const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-        if (nextModel) {
-          onChunk({
-            id: `switch-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: modelName,
-            choices: [{
-              index: 0,
-              delta: {
-                content: `\n\n⚠️ Stream from ${modelName} stopped unexpectedly. Switching to ${nextModel.model.name}...\n` +
-                  (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars.\n` : '') +
-                  `🔄 Continuing...\n\n`
-              },
-              finish_reason: null
-            }]
-          });
-        }
-        continue;
+	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+		if (nextModel) {
+			onChunk({
+				id: `switch-${Date.now()}`,
+				object: 'chat.completion.chunk',
+				created: Math.floor(Date.now() / 1000),
+				model: fullModelPath,
+				choices: [{
+					index: 0,
+					delta: {
+						content: `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
+						(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars.\n` : '') +
+						`🔄 Continuing...\n\n`
+					},
+					finish_reason: null
+				}]
+			});
+		}
+		continue;
       }
     } catch (error) {
       const latency = Math.round(performance.now() - streamStartTime);
@@ -783,25 +785,25 @@ private async executeStreamingBase(
       healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
       circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-      if (nextModel) {
-        onChunk({
-          id: `switch-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: modelName,
-          choices: [{
-            index: 0,
-            delta: {
-              content: `\n\n⚠️ Model ${modelName} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.name}...\n` +
-                (modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
-                `🔄 Continuing...\n\n`
-            },
-            finish_reason: null
-          }]
-        });
-      }
-      continue;
+	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+	if (nextModel) {
+		onChunk({
+			id: `switch-${Date.now()}`,
+			object: 'chat.completion.chunk',
+			created: Math.floor(Date.now() / 1000),
+			model: fullModelPath,
+			choices: [{
+				index: 0,
+				delta: {
+					content: `\n\n⚠️ Model [${providerName}] ${fullModelPath} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.id}...\n` +
+					(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
+					`🔄 Continuing...\n\n`
+				},
+				finish_reason: null
+			}]
+		});
+	}
+	continue;
     }
   }
 
