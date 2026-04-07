@@ -438,13 +438,14 @@ async executeStreaming(
         break;
       }
 
-      iteration++;
-      
-      // Collect streamed content
-      let fullContent = '';
-      let streamError: Error | null = null;
+    iteration++;
 
-try {
+    // Collect streamed content
+    let fullContent = '';
+    let fullContentClean = ''; // Track clean content without status messages
+    let streamError: Error | null = null;
+
+    try {
       console.log(`[LOOP] Iteration ${iteration} - streaming...`);
 
       await new Promise<void>((resolve, reject) => {
@@ -458,8 +459,10 @@ try {
                   !content.includes('Switching to') &&
                   !content.includes('⚠️') &&
                   !content.includes('🔄') &&
-                  !content.includes('📝 Preserving')) {
+                  !content.includes('📝 Preserving') &&
+                  !content.match(/\(｡•́︿•̀｡\)|\(◔_◔\)|\(¬‿¬\)|\(•_•\)|\(・_・；\)|\(￣ω￣\)|\(⌐■_■\)|\(◕‿◕\)|\(｡◕‿◕｡\)|\(✿◠‿◠\)/)) {
                 fullContent += content;
+                fullContentClean += content;
               }
               onChunk(chunk);
             }
@@ -473,73 +476,51 @@ try {
         );
       });
 
-        // Check for completion marker
-        if (fullContent.includes(completionMarker)) {
-          console.log(`[LOOP] Task completed at iteration ${iteration}`);
-          onComplete?.();
-          return;
-        }
+      // Check for completion marker
+      if (fullContentClean.includes(completionMarker)) {
+        console.log(`[LOOP] Task completed at iteration ${iteration}`);
+        onComplete?.();
+        return;
+      }
 
-        // Generate smart feedback
-        const feedback = this.generateSmartFeedback(fullContent, iteration);
-        console.log(`[LOOP] Iteration ${iteration} incomplete - continuing...`);
+      // Generate smart feedback
+      const feedback = this.generateSmartFeedback(fullContentClean, iteration);
+      console.log(`[LOOP] Iteration ${iteration} incomplete - continuing...`);
 
-        // Send feedback to user
-        onChunk({
-          id: `loop-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: request.model || 'unknown',
-          choices: [{
-            index: 0,
-            delta: {
-              content: `\n\n[Verification: Iteration ${iteration} - continuing...]\n\n`
-            },
-            finish_reason: null
-          }]
-        });
+      // Send feedback to user
+      onChunk({
+        id: `loop-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model || 'unknown',
+        choices: [{
+          index: 0,
+          delta: {
+            content: `\n\n[Verification: Iteration ${iteration} - continuing...]\n\n`
+          },
+          finish_reason: null
+        }]
+      });
 
-        // Add feedback for next iteration
+      // Add feedback for next iteration using clean content
+      messages.push(
+        { role: 'assistant', content: fullContentClean },
+        { role: 'user', content: feedback }
+      );
+
+      // Delay before next iteration
+      await new Promise(r => setTimeout(r, 1000));
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
+
+      // If we have partial clean content, save it and retry with different model
+      if (fullContentClean && fullContentClean.length > 10) {
         messages.push(
-          { role: 'assistant', content: fullContent },
-          { role: 'user', content: feedback }
+          { role: 'assistant', content: fullContentClean },
+          { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
         );
 
-        // Delay before next iteration
-        await new Promise(r => setTimeout(r, 1000));
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
-        
-        // Don't call onError - instead continue loop with new model
-        // The fallback chain in executeStreamingBase already tried alternatives
-        
-        // If we have partial content, save it and retry with different model
-        if (fullContent && fullContent.length > 10) {
-          messages.push(
-            { role: 'assistant', content: fullContent },
-            { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
-          );
-          
-          onChunk({
-            id: `loop-error-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: request.model || 'unknown',
-            choices: [{
-              index: 0,
-              delta: {
-                content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
-              },
-              finish_reason: null
-            }]
-          });
-          
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
-        
-        // No partial content - just retry
         onChunk({
           id: `loop-error-${Date.now()}`,
           object: 'chat.completion.chunk',
@@ -548,15 +529,34 @@ try {
           choices: [{
             index: 0,
             delta: {
-              content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
+              content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
             },
             finish_reason: null
           }]
         });
-        
+
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
+
+      // No partial content - just retry
+      onChunk({
+        id: `loop-error-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model || 'unknown',
+        choices: [{
+          index: 0,
+          delta: {
+            content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
+          },
+          finish_reason: null
+        }]
+      });
+
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
     }
   }
 
@@ -624,16 +624,31 @@ private async executeStreamingBase(
     throw new Error('No streaming model available');
   }
 
-	const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
-	const triedModels: Set<string> = new Set();
-	let accumulatedContent = '';
-	let lastModelName = '';
-	let isFirstModel = true;
+  const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
+  const triedModels: Set<string> = new Set();
+  let accumulatedContent = '';
+  let accumulatedContentClean = ''; // Clean content without status/switch messages
+  let lastModelName = '';
+  let isFirstModel = true;
 
-	const KAWAII_FACES = [
-		'(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
-		'(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-	];
+  const KAWAII_FACES = [
+    '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+    '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+  ];
+
+  // Patterns to filter out from content accumulation
+  const STATUS_PATTERNS = [
+    /\(｡•́︿•̀｡\)/, /\(◔_◔\)/, /\(¬‿¬\)/, /\(•_•\)/, /\(・_・；\)/,
+    /\(￣ω￣\)/, /\(⌐■_■\)/, /\(◕‿◕\)/, /\(｡◕‿◕｡\)/, /\(✿◠‿◠\)/,
+    /\[nvidia-nim\]/, /\[openrouter\]/, /\[groq\]/,
+    /Fallback:/,
+    /⚠️/, /🔄/, /📝/,
+    /Switching to/, /Model:/, /Preserving/,
+  ];
+
+  const isStatusMessage = (content: string): boolean => {
+    return STATUS_PATTERNS.some(pattern => pattern.test(content));
+  };
 
 	const isContentTruncated = (content: string, modelName: string): boolean => {
 		if (!content || content.length < 100) return false;
@@ -674,49 +689,57 @@ private async executeStreamingBase(
 		if (triedModels.has(rankedModel.model.id)) continue;
 		triedModels.add(rankedModel.model.id);
 
-		const provider = this.providers.get(rankedModel.model.provider);
-		if (!provider) continue;
+    const provider = this.providers.get(rankedModel.model.provider);
+    if (!provider) continue;
 
-		const streamStartTime = performance.now();
-		let streamSuccess = false;
-		let chunkCount = 0;
-		let modelPartialContent = '';
+    const streamStartTime = performance.now();
+    let streamSuccess = false;
+    let chunkCount = 0;
+    let modelPartialContent = '';
+    let modelPartialContentClean = ''; // Clean content for this model only
 
-		const fullModelPath = rankedModel.model.id;
-		const providerName = rankedModel.model.provider;
-		const modelChanged = lastModelName && lastModelName !== fullModelPath;
+    const fullModelPath = rankedModel.model.id;
+    const providerName = rankedModel.model.provider;
+    const modelChanged = lastModelName && lastModelName !== fullModelPath;
 
-		if (isFirstModel || modelChanged) {
-			const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-			const displayPath = `[${providerName}] ${fullModelPath}`;
-			const statusMsg = isFirstModel
-				? `\n${randomFace} ${displayPath}\n\n`
-				: `\n${randomFace} Fallback: ${displayPath}\n\n`;
+    if (isFirstModel || modelChanged) {
+      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+      const displayPath = `[${providerName}] ${fullModelPath}`;
+      const statusMsg = isFirstModel
+        ? `\n${randomFace} ${displayPath}\n\n`
+        : `\n${randomFace} Fallback: ${displayPath}\n\n`;
 
-			onChunk({
-				id: `status-${Date.now()}`,
-				object: 'chat.completion.chunk',
-				created: Math.floor(Date.now() / 1000),
-				model: fullModelPath,
-				choices: [{
-					index: 0,
-					delta: { content: statusMsg },
-					finish_reason: null
-				}]
-			});
-		}
+      // Send status as a special metadata chunk, not as content
+      // This prevents status messages from accumulating in content
+      console.log(`[STREAM] ${isFirstModel ? 'Starting' : 'Switching to'} ${displayPath}`);
 
-		lastModelName = fullModelPath;
-		isFirstModel = false;
+      // Still send the status message for user visibility, but mark it clearly
+      onChunk({
+        id: `status-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: fullModelPath,
+        choices: [{
+          index: 0,
+          delta: { content: statusMsg },
+          finish_reason: null
+        }]
+      });
+    }
 
+    lastModelName = fullModelPath;
+    isFirstModel = false;
+
+    // Build request - only inject clean accumulated content, not status messages
     let modelRequest = { ...request, model: rankedModel.model.id };
-    if (accumulatedContent.length > 0) {
-      const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output:\n---\n${accumulatedContent.slice(-2000)}\n---\nContinue exactly from where it stopped, maintaining the same format and style.]`;
+    if (accumulatedContentClean.length > 0) {
+      // Use only clean content for continuation
+      const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output (last 1500 chars):\n---\n${accumulatedContentClean.slice(-1500)}\n---\nContinue exactly from where it stopped, maintaining the same format and style. Do NOT repeat the content above.]`;
       modelRequest = {
         ...modelRequest,
         messages: [
           ...request.messages,
-          { role: 'assistant', content: accumulatedContent },
+          { role: 'assistant', content: accumulatedContentClean },
           { role: 'user', content: continuationPrompt }
         ]
       };
@@ -731,9 +754,15 @@ private async executeStreamingBase(
           if (typeof content === 'string') {
             modelPartialContent += content;
             accumulatedContent += content;
+            
+            // Only accumulate clean content (filter out status messages)
+            if (!isStatusMessage(content)) {
+              modelPartialContentClean += content;
+              accumulatedContentClean += content;
+            }
           }
           onChunk(chunk);
-},
+        },
 	() => {
 		const latency = Math.round(performance.now() - streamStartTime);
 		const hasContent = modelPartialContent.trim().length > 0;
@@ -768,7 +797,7 @@ private async executeStreamingBase(
 		}
 		onComplete?.();
 	},
-      (error) => {
+        (error) => {
           const latency = Math.round(performance.now() - streamStartTime);
           streamSuccess = false;
           let statusCode = 'ERR';
@@ -780,24 +809,25 @@ private async executeStreamingBase(
           healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
           circuitBreaker.recordFailure(rankedModel.model.provider, msg);
 
-	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-			if (nextModel) {
-				onChunk({
-					id: `switch-${Date.now()}`,
-					object: 'chat.completion.chunk',
-					created: Math.floor(Date.now() / 1000),
-					model: fullModelPath,
-					choices: [{
-						index: 0,
-						delta: {
-							content: `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
-							(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
-							`🔄 Continuing...\n\n`
-						},
-						finish_reason: null
-					}]
-				});
-				console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContent.length} chars)`);
+          const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+          if (nextModel) {
+            const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
+              (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
+              `🔄 Continuing...\n\n`;
+            
+            console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
+            
+            onChunk({
+              id: `switch-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: fullModelPath,
+              choices: [{
+                index: 0,
+                delta: { content: switchMsg },
+                finish_reason: null
+              }]
+            });
           } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
             onError?.(error);
           }
@@ -819,24 +849,24 @@ private async executeStreamingBase(
         });
         circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
 
-	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-		if (nextModel) {
-			onChunk({
-				id: `switch-${Date.now()}`,
-				object: 'chat.completion.chunk',
-				created: Math.floor(Date.now() / 1000),
-				model: fullModelPath,
-				choices: [{
-					index: 0,
-					delta: {
-						content: `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
-						(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars.\n` : '') +
-						`🔄 Continuing...\n\n`
-					},
-					finish_reason: null
-				}]
-			});
-		}
+        const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+        if (nextModel) {
+          const switchMsg = `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
+            (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars.\n` : '') +
+            `🔄 Continuing...\n\n`;
+          
+          onChunk({
+            id: `switch-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: fullModelPath,
+            choices: [{
+              index: 0,
+              delta: { content: switchMsg },
+              finish_reason: null
+            }]
+          });
+        }
 		continue;
       }
     } catch (error) {
@@ -853,24 +883,24 @@ private async executeStreamingBase(
       healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
       circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
 
-	const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-	if (nextModel) {
-		onChunk({
-			id: `switch-${Date.now()}`,
-			object: 'chat.completion.chunk',
-			created: Math.floor(Date.now() / 1000),
-			model: fullModelPath,
-			choices: [{
-				index: 0,
-				delta: {
-					content: `\n\n⚠️ Model [${providerName}] ${fullModelPath} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.id}...\n` +
-					(modelPartialContent.length > 0 ? `📝 Preserving ${modelPartialContent.length} chars of partial content.\n` : '') +
-					`🔄 Continuing...\n\n`
-				},
-				finish_reason: null
-			}]
-		});
-	}
+      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
+      if (nextModel) {
+        const switchMsg = `\n\n⚠️ Model [${providerName}] ${fullModelPath} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.id}...\n` +
+          (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
+          `🔄 Continuing...\n\n`;
+        
+        onChunk({
+          id: `switch-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: fullModelPath,
+          choices: [{
+            index: 0,
+            delta: { content: switchMsg },
+            finish_reason: null
+          }]
+        });
+      }
 	continue;
     }
   }
