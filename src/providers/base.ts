@@ -494,6 +494,26 @@ try {
       body.tool_choice = request.tool_choice;
     }
 
+    // Additional OpenAI parameters
+    if (request.seed !== undefined) {
+      body.seed = request.seed;
+    }
+    if (request.logit_bias !== undefined) {
+      body.logit_bias = request.logit_bias;
+    }
+    if (request.parallel_tool_calls !== undefined) {
+      body.parallel_tool_calls = request.parallel_tool_calls;
+    }
+    if (request.logprobs !== undefined) {
+      body.logprobs = request.logprobs;
+    }
+    if (request.top_logprobs !== undefined) {
+      body.top_logprobs = request.top_logprobs;
+    }
+    if (request.response_format !== undefined) {
+      body.response_format = request.response_format;
+    }
+
     return body;
   }
 }

@@ -44,6 +44,13 @@ export interface ChatCompletionRequest {
   n?: number;
   tools?: ToolDefinition[];
   tool_choice?: ToolChoice;
+  // Additional OpenAI parameters
+  seed?: number;
+  logit_bias?: Record<string, number>;
+  parallel_tool_calls?: boolean;
+  logprobs?: boolean;
+  top_logprobs?: number;
+  response_format?: { type: 'text' | 'json_object' };
 }
 
 export interface ChatCompletionResponse {

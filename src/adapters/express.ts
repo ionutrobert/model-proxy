@@ -84,6 +84,13 @@ const chatCompletionRequestSchema = z.object({
   n: z.number().positive().optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   tool_choice: toolChoiceSchema.optional(),
+  // Additional OpenAI parameters
+  seed: z.number().optional(),
+  logit_bias: z.record(z.number()).optional(),
+  parallel_tool_calls: z.boolean().optional(),
+  logprobs: z.boolean().optional(),
+  top_logprobs: z.number().optional(),
+  response_format: z.object({ type: z.enum(['text', 'json_object']) }).optional(),
 });
 
 // ============================================================================
