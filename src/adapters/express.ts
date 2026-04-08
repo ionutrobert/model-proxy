@@ -91,12 +91,6 @@ const chatCompletionRequestSchema = z.object({
 
 export function createAuthMiddleware(proxyApiKey: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    // Skip auth for health check and metrics endpoints
-    if (req.path === '/health' || req.path === '/health/simple' || req.path.startsWith('/metrics')) {
-      next();
-      return;
-    }
-
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -1086,6 +1080,7 @@ export function createExpressRoutes(proxy: ModelProxyCore, proxyApiKey: string) 
 
   // Mount public routes (no auth)
   router.use('/metrics', createMetricsRoutes(proxy));
+  router.use('/health', createHealthRoutes(proxy));
 
   // Apply authentication to protected routes
   router.use(createAuthMiddleware(proxyApiKey));
@@ -1096,7 +1091,6 @@ export function createExpressRoutes(proxy: ModelProxyCore, proxyApiKey: string) 
   router.use('/v1/embeddings', createEmbeddingsRoutes(proxy));
   router.use('/v1/completions', createCompletionsRoutes(proxy));
   router.use('/v1/responses', createResponsesRoutes(proxy));
-  router.use('/health', createHealthRoutes(proxy));
 
   // 404 handler
   router.use((req: Request, res: Response) => {

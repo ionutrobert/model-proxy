@@ -37,4 +37,20 @@ temp/
 
 # Build artifacts
 *.tgz
+
+# Documentation (keep only README.md)
+README-*.md
+LIVE_TEST_RESULTS.md
+IMPLEMENTATION_SUMMARY.md
+*.md.bak
+
+# Test results and output files
+test-results.*
+test-output.*
+*.test.results
+
+# Integration tests folder
 src/__tests__/integration/
+
+# E2E tests (should stay outside repo)
+e2e-tests/
