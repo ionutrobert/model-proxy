@@ -7,10 +7,10 @@ import type { ProviderId, Verdict, ModelConfig } from './types.js';
 import { healthTracker } from './health-tracker.js';
 
 // Constants from free-coding-models
-const PING_TIMEOUT_MS = 15000; // 15 seconds per request
-const PING_INTERVAL_MS = 10000; // 10 seconds between pings (steady state)
-const BURST_INTERVAL_MS = 2000; // 2 seconds (burst mode for new models)
-const IDLE_INTERVAL_MS = 30000; // 30 seconds (idle mode for stable models)
+const PING_TIMEOUT_MS = 60000; // 60 seconds per request - accommodate thinking models
+const PING_INTERVAL_MS = 30000; // 30 seconds between pings - reduce pressure
+const BURST_INTERVAL_MS = 5000; // 5 seconds (burst mode for new models)
+const IDLE_INTERVAL_MS = 60000; // 60 seconds (idle mode for stable models)
 
 // Unhealthy thresholds
 const MAX_CONSECUTIVE_FAILURES = 5; // Increased from 3 - don't mark unhealthy too fast
@@ -219,6 +219,7 @@ export class ModelHealthVerifier {
       status.consecutiveFailures++;
 
       // Record failure in health tracker
+      // Ping failures are weighted less critically than direct request failures
       healthTracker.recordRequest(model.id, model.provider, {
         latency: result.latency,
         statusCode: String(result.statusCode),
