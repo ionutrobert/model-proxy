@@ -73,6 +73,7 @@ import {
   HealthCheckResult,
   RankedModel,
   ProviderId,
+  ModelNotFoundError,
 } from './types.js';
 import { ProviderRegistry } from './provider-registry.js';
 import { dynamicHealthService } from './dynamic-health-service.js';
@@ -268,17 +269,17 @@ export class ModelProxyCore {
       throw new Error('No healthy models available. Check your API keys and network.');
     }
 
-    // Direct model execution when specific model is requested
-    const useAutoSelection = options?.useAutoSelection !== false;
-    if (!useAutoSelection && request.model) {
+    // If a specific model is requested (excluding auto-modes already expanded in route), use it directly
+    const forceAutoSelection = options?.useAutoSelection === true;
+    if (request.model && !forceAutoSelection) {
       const modelId = request.model;
       console.log(`\n🎯 Direct execution for model: ${modelId}`);
 
       const modelConfig = this.allModels.find(m => m.id === modelId);
 
-      // If model not found, throw error (NO FALLBACK)
+      // If model not found, throw 404 error (NO FALLBACK)
       if (!modelConfig) {
-        throw new Error(`Model ${modelId} not found. Available models: ${this.allModels.map(m => m.id).join(', ')}`);
+        throw new ModelNotFoundError(modelId);
       }
 
       const provider = this.providers.get(modelConfig.provider);

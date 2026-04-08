@@ -315,7 +315,18 @@ export class ProviderUnavailableError extends ModelProxyError {
       `Provider ${providerId} is unavailable`,
       'provider_unavailable',
       503,
-      'service_unavailable'
+      'server_error'
+    );
+  }
+}
+
+export class ModelNotFoundError extends ModelProxyError {
+  constructor(modelId: string) {
+    super(
+      `Model ${modelId} not found`,
+      'model_not_found',
+      404,
+      'invalid_request_error'
     );
   }
 }
