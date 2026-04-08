@@ -13,8 +13,8 @@ const BURST_INTERVAL_MS = 2000; // 2 seconds (burst mode for new models)
 const IDLE_INTERVAL_MS = 30000; // 30 seconds (idle mode for stable models)
 
 // Unhealthy thresholds
-const MAX_CONSECUTIVE_FAILURES = 3;
-const UNHEALTHY_WINDOW_MS = 60000; // If last failure within 60s, consider unhealthy
+const MAX_CONSECUTIVE_FAILURES = 5; // Increased from 3 - don't mark unhealthy too fast
+const UNHEALTHY_WINDOW_MS = 120000; // Increased from 60s - give models more time
 
 export interface ModelVerificationStatus {
   modelId: string;
@@ -61,7 +61,7 @@ export class ModelHealthVerifier {
     return {
       model: modelId,
       messages: [{ role: 'user', content: 'hi' }],
-      max_tokens: 1,
+      max_tokens: 10, // Increased from 1 - more realistic for thinking models
       stream: false,
     };
   }
@@ -246,40 +246,33 @@ export class ModelHealthVerifier {
   isHealthy(modelId: string): boolean {
     const status = this.getStatus(modelId);
 
-    // Not verified yet
-    if (status.status === 'pending') {
-      return false;
-    }
-
-    // Explicitly marked unhealthy
+    // Explicitly marked unhealthy - ONLY exclude truly unhealthy models
     if (status.status === 'unhealthy') {
       return false;
     }
 
-    // Check consecutive failures
+    // Too many consecutive failures
     if (status.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       return false;
     }
 
-    // Check if last failure was recent
-    if (status.lastFailure) {
+    // Recent failure within unhealthy window
+    if (status.lastFailure && status.lastSuccess === null) {
+      // Has only failures, no successes ever - check window
       const timeSinceFailure = Date.now() - status.lastFailure;
-      if (timeSinceFailure < UNHEALTHY_WINDOW_MS && status.consecutiveFailures > 0) {
+      if (timeSinceFailure < UNHEALTHY_WINDOW_MS) {
         return false;
       }
     }
 
-    // Must have at least one successful ping
-    if (status.successfulPings === 0) {
-      return false;
-    }
-
-    // Check verdict from health tracker
+    // Check verdict from health tracker - ONLY exclude known bad verdicts
     const unhealthyVerdicts: Verdict[] = ['Unstable', 'Not Active', 'Overloaded'];
     if (unhealthyVerdicts.includes(status.verdict)) {
       return false;
     }
 
+    // Don't require successful pings - allow unverified models through
+    // They can still be used if other health checks pass
     return true;
   }
 

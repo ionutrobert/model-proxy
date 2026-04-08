@@ -278,14 +278,23 @@ class AutoModesHandler {
     const results: Array<{ model: ModelConfig; health: ModelHealthHistory; stability: number }> = [];
 
     for (const model of models) {
-      // First check: must be verified healthy via active ping
+      // Check verifier health - be lenient, don't exclude unverified models
       if (!modelHealthVerifier.isHealthy(model.id)) {
-        continue;
+        // Only skip if explicitly unhealthy, not just unverified
+        const status = modelHealthVerifier.getStatus(model.id);
+        if (status.status === 'unhealthy') {
+          continue;
+        }
+        // Unverified/pending models can still be used
       }
 
       const health = healthData.get(model.id.toLowerCase());
       if (!health) continue;
-      if (health.stabilityScore < config.minStability) continue;
+      
+      // Lower stability threshold for auto-coding - be more inclusive
+      const effectiveMinStability = config.task === 'coding' ? 30 : config.minStability;
+      if (health.stabilityScore < effectiveMinStability) continue;
+      
       if (model.contextWindow < config.minContextWindow) continue;
 
       const tierWeight = TIER_WEIGHTS[model.tier] || 0;
@@ -294,6 +303,7 @@ class AutoModesHandler {
 
       if (config.maxLatency && health.metrics.avgLatency > config.maxLatency) continue;
 
+      // Skip ONLY explicitly unhealthy verdicts
       const unhealthyVerdicts: Verdict[] = ['Unstable', 'Not Active', 'Overloaded'];
       if (unhealthyVerdicts.includes(health.verdict)) continue;
 
