@@ -417,11 +417,39 @@ try {
   }
 
   /**
+   * Validate and fix message ordering for tool conversations
+   * NVIDIA NIM requires: user -> assistant (with tool_calls) -> tool -> assistant
+   * Cannot have user after tool without assistant in between
+   */
+  private validateMessageOrder(messages: any[]): any[] {
+    const validated: any[] = [];
+    
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const prevMsg = validated[validated.length - 1];
+      
+      // Check for invalid sequence: tool followed by user
+      if (prevMsg?.role === 'tool' && msg.role === 'user') {
+        console.warn(`[BASE-PROVIDER] Invalid message sequence: tool -> user. Inserting assistant message.`);
+        // Insert a placeholder assistant message
+        validated.push({
+          role: 'assistant',
+          content: 'I have processed the tool results.',
+        });
+      }
+      
+      validated.push(msg);
+    }
+    
+    return validated;
+  }
+
+  /**
    * Build request body for provider
    */
   protected buildRequestBody(request: ChatCompletionRequest): unknown {
     // Normalize messages - NVIDIA NIM expects string content, OpenAI may send arrays
-    const normalizedMessages = request.messages.map(msg => {
+    let normalizedMessages = request.messages.map(msg => {
       if (typeof msg.content === 'string') {
         return msg;
       }
@@ -435,6 +463,9 @@ try {
       }
       return msg;
     });
+    
+    // Validate message ordering for tool conversations
+    normalizedMessages = this.validateMessageOrder(normalizedMessages);
 
     const body: Record<string, unknown> = {
       model: request.model,
