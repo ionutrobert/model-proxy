@@ -58,6 +58,8 @@ export {
   smartModelSelector,
 } from './smart-selector.js';
 
+export { modelHealthVerifier } from './model-health-verifier.js';
+
 // ============================================================================
 // Main Model Proxy Class (Simplified - No Orchestration)
 // ============================================================================
@@ -79,6 +81,7 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
+import { modelHealthVerifier } from './model-health-verifier.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -161,6 +164,45 @@ export class ModelProxyCore {
           `Tier: ${rm.tier}, Context: ${rm.model.contextWindow.toLocaleString()}, ` +
           `Latency: ${rm.health.latency}ms`
         );
+      }
+    }
+
+    // Now verify models with actual ping requests
+    console.log('\n🔧 Verifying model health with active pings...');
+    await this.verifyModels();
+  }
+
+  private async verifyModels(): Promise<void> {
+    // Build provider config map
+    const providerConfigs = new Map<string, { baseUrl: string; apiKey: string }>();
+    for (const provider of this.config.providers) {
+      const key = provider.keyPool 
+        ? provider.keyPool.keys[0].key 
+        : provider.apiKey;
+      providerConfigs.set(provider.id, {
+        baseUrl: provider.baseUrl,
+        apiKey: key,
+      });
+    }
+
+    const getProviderConfig = (providerId: string) => {
+      return providerConfigs.get(providerId) || null;
+    };
+
+    // Verify all models
+    const result = await modelHealthVerifier.verifyAllModels(
+      this.allModels,
+      getProviderConfig
+    );
+
+    console.log(`\n✅ Verification complete: ${result.verified.length} verified, ${result.failed.length} failed`);
+
+    // Log failed models
+    if (result.failed.length > 0) {
+      console.log('\n⚠️  Failed models (will be excluded from auto-selection):');
+      for (const modelId of result.failed) {
+        const status = modelHealthVerifier.getStatus(modelId);
+        console.log(` - ${modelId}: ${status.status} (${status.consecutiveFailures} consecutive failures)`);
       }
     }
   }

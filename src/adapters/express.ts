@@ -23,6 +23,7 @@ import { healthTracker } from '../core/health-tracker.js';
 import { proxyExecutor } from '../core/proxy-executor.js';
 import { circuitBreaker } from '../core/circuit-breaker.js';
 import { KeyPoolManager } from '../core/key-pool.js';
+import { modelHealthVerifier } from '../core/model-health-verifier.js';
 
 // ============================================================================
 // Request Validation Schemas
@@ -541,6 +542,56 @@ export function createHealthRoutes(proxy: ModelProxyCore) {
       res.json({
         status: 'refreshed',
         timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      handleError(error, res);
+    }
+  });
+
+  /**
+   * GET /health/models
+   * Get model verification status
+   */
+  router.get('/models', (req: Request, res: Response): void => {
+    try {
+      const allHealth = healthTracker.getAllHealth();
+      const verifierStatus = modelHealthVerifier.getAllStatus();
+      const verifierSummary = modelHealthVerifier.getSummary();
+
+      const models: Array<{
+        id: string;
+        provider: string;
+        verified: boolean;
+        status: string;
+        verdict: string;
+        stability: number;
+        lastSuccess: string | null;
+        lastFailure: string | null;
+        consecutiveFailures: number;
+        isHealthy: boolean;
+      }> = [];
+
+      for (const [key, status] of verifierStatus) {
+        const health = allHealth.get(key);
+        models.push({
+          id: status.modelId,
+          provider: status.providerId,
+          verified: status.isVerified,
+          status: status.status,
+          verdict: status.verdict,
+          stability: status.stabilityScore,
+          lastSuccess: status.lastSuccess ? new Date(status.lastSuccess).toISOString() : null,
+          lastFailure: status.lastFailure ? new Date(status.lastFailure).toISOString() : null,
+          consecutiveFailures: status.consecutiveFailures,
+          isHealthy: modelHealthVerifier.isHealthy(status.modelId),
+        });
+      }
+
+      res.json({
+        summary: verifierSummary,
+        verified: modelHealthVerifier.getVerifiedModels(),
+        unhealthy: modelHealthVerifier.getUnhealthyModels(),
+        models,
       });
     } catch (error) {
       handleError(error, res);

@@ -5,6 +5,7 @@
 import { ModelConfig, ProviderId, Verdict } from './types.js';
 import { getCuratedModel, supportsToolCalling } from './curated-models.js';
 import { detectThinkingModel } from './health-calculator.js';
+import { modelHealthVerifier } from './model-health-verifier.js';
 import type { ModelHealthHistory } from './types.js';
 
 export type AutoMode = 'auto-coding' | 'auto-fast' | 'auto-balanced';
@@ -277,6 +278,11 @@ class AutoModesHandler {
     const results: Array<{ model: ModelConfig; health: ModelHealthHistory; stability: number }> = [];
 
     for (const model of models) {
+      // First check: must be verified healthy via active ping
+      if (!modelHealthVerifier.isHealthy(model.id)) {
+        continue;
+      }
+
       const health = healthData.get(model.id.toLowerCase());
       if (!health) continue;
       if (health.stabilityScore < config.minStability) continue;
