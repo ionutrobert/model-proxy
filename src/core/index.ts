@@ -1,5 +1,7 @@
 // ============================================================================
-// Core Module - Framework-agnostic model proxy functionality
+// Core Module - Simple Model Proxy
+// Features: Health-based ranking, direct model selection, key rotation on 429
+// NO: Verification loops, adaptive scoring, checkpointing, aggressive switching
 // ============================================================================
 
 // Types
@@ -56,28 +58,8 @@ export {
   smartModelSelector,
 } from './smart-selector.js';
 
-// Adaptive Scoring & State Management
-export { adaptiveModelScorer } from './adaptive-scorer.js';
-export { conversationStateManager } from './conversation-state.js';
-
-// Verification Orchestrator
-export {
-  VerificationOrchestrator,
-  DEFAULT_LOOP_CONFIG,
-} from './verification-orchestrator.js';
-
-export {
-  injectVerificationPrompt,
-  removeTriggerPhrase,
-} from './prompt-injector.js';
-
-export {
-  detectCompletion,
-  extractContentBeforeMarker,
-} from './completion-detector.js';
-
 // ============================================================================
-// Main Model Proxy Class
+// Main Model Proxy Class (Simplified - No Orchestration)
 // ============================================================================
 
 import {
@@ -97,10 +79,6 @@ import { circuitBreaker } from './circuit-breaker.js';
 import { BaseProvider } from '../providers/base.js';
 import { createProvider } from '../providers/index.js';
 import { healthTracker } from './health-tracker.js';
-import { VerificationOrchestrator } from './verification-orchestrator.js';
-import { injectVerificationPrompt } from './prompt-injector.js';
-import { conversationStateManager, ConversationCheckpoint } from './conversation-state.js';
-import { adaptiveModelScorer } from './adaptive-scorer.js';
 
 export class ModelProxyCore {
   private providers: Map<ProviderId, BaseProvider> = new Map();
@@ -199,13 +177,13 @@ export class ModelProxyCore {
 
     // Build updated health results from actual request data
     const updatedHealthResults: HealthCheckResult[] = [];
-    
+
     for (const model of this.allModels) {
       const history = healthTracker.getHealth(model.id);
       if (history && history.metrics.totalRequests > 0) {
         const avgLatency = history.metrics.avgLatency;
         const verdict = history.verdict;
-        
+
         updatedHealthResults.push({
           modelId: model.id,
           providerId: model.provider,
@@ -219,7 +197,7 @@ export class ModelProxyCore {
     // If we have enough real data, recompute rankings
     if (updatedHealthResults.length >= Math.min(3, this.allModels.length)) {
       const oldTop = this.rankedModels[0]?.model.id;
-      
+
       this.rankedModels = smartModelSelector.rankModels(
         this.allModels,
         updatedHealthResults,
@@ -227,11 +205,11 @@ export class ModelProxyCore {
       );
 
       const newTop = this.rankedModels[0]?.model.id;
-      
+
       if (oldTop && newTop && oldTop !== newTop) {
         console.log(`📊 Rankings updated: ${oldTop} → ${newTop} (based on real latency)`);
       }
-      
+
       this.lastRankingUpdate = now;
     }
   }
@@ -248,110 +226,54 @@ export class ModelProxyCore {
       throw new Error('No healthy models available. Check your API keys and network.');
     }
 
-    // Check for #loop trigger to enable verification
-    const orchestrator = new VerificationOrchestrator();
-    if (orchestrator.shouldEnableLoop(request.messages)) {
-      console.log('🔁 Verification loop enabled (#loop detected)');
-      return orchestrator.executeWithVerification(
-        request,
-        async (req) => {
-          // Use fallback chain for execution
-          const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
-          return this.executeWithFallback(req, fallbackChain);
-        }
-      );
-    }
+    // Direct model execution when specific model is requested
+    const useAutoSelection = options?.useAutoSelection !== false;
+    if (!useAutoSelection && request.model) {
+      const modelId = request.model;
+      console.log(`\n🎯 Direct execution for model: ${modelId}`);
 
-// Direct model execution when specific model is requested
-  const useAutoSelection = options?.useAutoSelection !== false;
-  if (!useAutoSelection && request.model) {
-    const modelId = request.model;
-    console.log(`\n🎯 Direct execution for model: ${modelId}`);
+      const modelConfig = this.allModels.find(m => m.id === modelId);
 
-    const modelConfig = this.allModels.find(m => m.id === modelId);
-    
-    // If model not found, fall back to auto selection instead of erroring
-    if (!modelConfig) {
-      console.warn(`⚠️ Model ${modelId} not found, falling back to auto selection`);
-      // Fall through to auto selection logic below
-    } else {
-      const provider = this.providers.get(modelConfig.provider);
-      if (!provider) {
-        console.warn(`⚠️ Provider ${modelConfig.provider} not initialized, falling back to auto selection`);
+      // If model not found, fall back to auto selection instead of erroring
+      if (!modelConfig) {
+        console.warn(`⚠️ Model ${modelId} not found, falling back to auto selection`);
         // Fall through to auto selection logic below
       } else {
-        const startTime = performance.now();
-        try {
-          const response = await provider.execute({ ...request, model: modelId });
-          const latency = Math.round(performance.now() - startTime);
+        const provider = this.providers.get(modelConfig.provider);
+        if (!provider) {
+          console.warn(`⚠️ Provider ${modelConfig.provider} not initialized, falling back to auto selection`);
+          // Fall through to auto selection logic below
+        } else {
+          const startTime = performance.now();
+          try {
+            const response = await provider.execute({ ...request, model: modelId });
+            const latency = Math.round(performance.now() - startTime);
 
-          // Check for empty content - content can be string, array, or null
-          // But if tool_calls are present, that's valid too
-	const content = response.choices?.[0]?.message?.content;
-	const toolCalls = response.choices?.[0]?.message?.tool_calls;
-	const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
-	const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
-
-	const isTruncated = (() => {
-		if (!contentStr || contentStr.length < 50) return false;
-		const trimmed = contentStr.trim();
-		const lastChars = trimmed.slice(-50);
-		const lastLine = trimmed.split('\n').pop() || '';
-		const unclosedCodeBlocks = (trimmed.match(/```/g) || []).length % 2 !== 0;
-		const unclosedBrackets = /[{(\[]\s*$/.test(lastLine) || /[{(\[][^})\]]*$/.test(lastChars);
-		const endsMidWord = /[a-zA-Z0-9]$/.test(trimmed) && !/[.!?。！？]$/.test(trimmed);
-		const endsMidSentence = !/[.!?。！？\n]\s*$/.test(trimmed) && trimmed.length > 200;
-		return unclosedCodeBlocks || unclosedBrackets || (endsMidWord && endsMidSentence);
-	})();
-
-	if (isTruncated) {
-		console.warn(`⚠️ Model ${modelId} returned truncated content, trying fallback`);
-		healthTracker.recordRequest(modelId, modelConfig.provider, {
-			latency,
-			statusCode: '200',
-			success: false,
-		});
-		const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
-		return this.executeWithFallback(request, fallbackChain);
-	}
-
-	if (hasEmptyContent) {
-            console.warn(`⚠️ Model ${modelId} returned empty content, trying fallback`);
             healthTracker.recordRequest(modelId, modelConfig.provider, {
               latency,
               statusCode: '200',
-              success: false,
+              success: true,
             });
-            const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
-            return this.executeWithFallback(request, fallbackChain);
-          }
+            this.updateRankingsFromRealLatency();
+            return response;
+          } catch (error) {
+            const latency = Math.round(performance.now() - startTime);
+            const msg = error instanceof Error ? error.message : String(error);
+            let statusCode = 'ERR';
+            let success = false;
+            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
+            else if (msg.includes('429')) { statusCode = '429'; success = false; }
+            else if (msg.includes('404')) { statusCode = '404'; success = false; }
+            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+            healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
 
-      healthTracker.recordRequest(modelId, modelConfig.provider, { 
-        latency, 
-        statusCode: '200', 
-        success: true, 
-      });
-      this.updateRankingsFromRealLatency();
-      return response;
-        } catch (error) {
-          const latency = Math.round(performance.now() - startTime);
-          const msg = error instanceof Error ? error.message : String(error);
-          let statusCode = 'ERR';
-          let success = false;
-          if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
-          else if (msg.includes('429')) { statusCode = '429'; success = false; }
-          else if (msg.includes('404')) { statusCode = '404'; success = false; }
-          else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-          healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
-          
-          // On error, try fallback chain instead of throwing
-          console.warn(`⚠️ Model ${modelId} failed: ${msg}, trying fallback chain`);
-          const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
-          return this.executeWithFallback(request, fallbackChain);
+            // NO FALLBACK - just throw the error
+            console.error(`❌ Model ${modelId} failed: ${msg}`);
+            throw error;
+          }
         }
       }
     }
-  }
 
     const mode = options?.mode || 'best';
     console.log(`\n🤖 Executing request (mode: ${mode})`);
@@ -383,258 +305,37 @@ export class ModelProxyCore {
       throw new Error(`Provider ${selected.model.provider} not initialized`);
     }
 
-    const fallbackChain = smartModelSelector.getFallbackChain(this.rankedModels, 3);
-    console.log(`⛓️ Fallback chain: ${fallbackChain.map(m => m.model.name).join(' → ')}`);
-
-    return this.executeWithFallback(
-      { ...request, model: selected.model.id },
-      fallbackChain
-    );
-  }
-
-async executeStreaming(
-  request: ChatCompletionRequest,
-  onChunk: (chunk: ChatCompletionChunk) => void,
-  onComplete?: () => void,
-  onError?: (error: Error) => void,
-  mode?: SelectionMode
-): Promise<void> {
-  // Check for #loop trigger to enable verification
-  const orchestrator = new VerificationOrchestrator();
-  if (orchestrator.shouldEnableLoop(request.messages)) {
-    console.log('🔁 Verification loop enabled for streaming (#loop detected)');
-    await this.executeStreamingWithVerification(
-      request,
-      onChunk,
-      onComplete,
-      onError,
-      mode
-    );
-    return;
-  }
-
-  // Delegate to the base streaming method which handles model switching with content preservation
-  await this.executeStreamingBase(request, onChunk, onComplete, onError, mode);
-}
-
-/**
-   * Execute streaming with verification loop
-   * Collects full response, checks for completion, and loops if needed
-   */
-  private async executeStreamingWithVerification(
-    request: ChatCompletionRequest,
-    onChunk: (chunk: ChatCompletionChunk) => void,
-    onComplete?: () => void,
-    onError?: (error: Error) => void,
-    mode?: SelectionMode
-  ): Promise<void> {
-    const orchestrator = new VerificationOrchestrator();
-    const sanitizedMessages = orchestrator.sanitizeMessages(request.messages);
-    const messages = injectVerificationPrompt(sanitizedMessages);
-
-    // Helper to check if conversation has tool messages
-    const hasToolMessages = (msgs: any[]): boolean => {
-      return msgs.some(m => m.role === 'tool' || (m.role === 'assistant' && m.tool_calls?.length > 0));
-    };
-    const conversationHasTools = hasToolMessages(request.messages);
-
-    let iteration = 0;
-    const completionMarker = '[TASK_DONE]';
-    const maxIterations = 5;
-    const timeoutMs = 300000;
-    const startTime = Date.now();
-
-    while (iteration < maxIterations) {
-      if (Date.now() - startTime > timeoutMs) {
-        console.warn(`[LOOP] Timeout (${timeoutMs}ms) reached at iteration ${iteration}`);
-        break;
-      }
-
-    iteration++;
-
-    // Collect streamed content
-    let fullContent = '';
-    let fullContentClean = ''; // Track clean content without status messages
-    let streamError: Error | null = null;
-
+    // Execute directly - NO FALLBACK
+    const startTime = performance.now();
     try {
-      console.log(`[LOOP] Iteration ${iteration} - streaming...`);
+      const response = await provider.execute({ ...request, model: selected.model.id });
+      const latency = Math.round(performance.now() - startTime);
 
-      await new Promise<void>((resolve, reject) => {
-        this.executeStreamingBase(
-          { ...request, messages },
-          (chunk) => {
-            const content = chunk.choices[0]?.delta?.content;
-            if (typeof content === 'string') {
-              // Filter out status/switch notifications from content accumulation
-              if (!content.includes('Model:') &&
-                  !content.includes('Switching to') &&
-                  !content.includes('⚠️') &&
-                  !content.includes('🔄') &&
-                  !content.includes('📝 Preserving') &&
-                  !content.match(/\(｡•́︿•̀｡\)|\(◔_◔\)|\(¬‿¬\)|\(•_•\)|\(・_・；\)|\(￣ω￣\)|\(⌐■_■\)|\(◕‿◕\)|\(｡◕‿◕｡\)|\(✿◠‿◠\)/)) {
-                fullContent += content;
-                fullContentClean += content;
-              }
-              onChunk(chunk);
-            }
-          },
-          () => resolve(),
-          (error) => {
-            streamError = error;
-            reject(error);
-          },
-          mode
-        );
+      healthTracker.recordRequest(selected.model.id, selected.model.provider, {
+        latency,
+        statusCode: '200',
+        success: true,
       });
+      this.updateRankingsFromRealLatency();
+      return response;
+    } catch (error) {
+      const latency = Math.round(performance.now() - startTime);
+      const msg = error instanceof Error ? error.message : String(error);
+      let statusCode = 'ERR';
+      let success = false;
+      if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
+      else if (msg.includes('429')) { statusCode = '429'; success = false; }
+      else if (msg.includes('404')) { statusCode = '404'; success = false; }
+      else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+      healthTracker.recordRequest(selected.model.id, selected.model.provider, { latency, statusCode, success });
 
-      // Check for completion marker
-      if (fullContentClean.includes(completionMarker)) {
-        console.log(`[LOOP] Task completed at iteration ${iteration}`);
-        onComplete?.();
-        return;
-      }
-
-      // Generate smart feedback
-      const feedback = this.generateSmartFeedback(fullContentClean, iteration);
-      console.log(`[LOOP] Iteration ${iteration} incomplete - continuing...`);
-
-      // Send feedback to user
-      onChunk({
-        id: `loop-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: request.model || 'unknown',
-        choices: [{
-          index: 0,
-          delta: {
-            content: `\n\n[Verification: Iteration ${iteration} - continuing...]\n\n`
-          },
-          finish_reason: null
-        }]
-      });
-
-      // Add feedback for next iteration using clean content
-      // BUT: Skip mutation for tool conversations to avoid role mismatch
-      if (!conversationHasTools) {
-        messages.push(
-          { role: 'assistant', content: fullContentClean },
-          { role: 'user', content: feedback }
-        );
-      }
-
-      // Delay before next iteration
-      await new Promise(r => setTimeout(r, 1000));
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
-
-        // For tool conversations, don't try to recover - just fail
-        if (conversationHasTools) {
-          console.error(`[LOOP] Tool conversation error, aborting: ${errorMsg}`);
-          onChunk({
-            id: `loop-error-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: request.model || 'unknown',
-            choices: [{
-              index: 0,
-              delta: {
-                content: `\n\n❌ Tool conversation error: ${errorMsg}\n\n`
-              },
-              finish_reason: 'stop'
-            }]
-          });
-          if (onError) onError(error instanceof Error ? error : new Error(errorMsg));
-          return;
-        }
-
-        // If we have partial clean content, save it and retry with different model
-        if (fullContentClean && fullContentClean.length > 10) {
-          messages.push(
-            { role: 'assistant', content: fullContentClean },
-            { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
-          );
-
-          onChunk({
-            id: `loop-error-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: request.model || 'unknown',
-            choices: [{
-              index: 0,
-              delta: {
-                content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
-              },
-              finish_reason: null
-            }]
-          });
-
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
-
-        // No partial content - just retry
-        onChunk({
-          id: `loop-error-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: request.model || 'unknown',
-          choices: [{
-            index: 0,
-            delta: {
-              content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
-            },
-            finish_reason: null
-          }]
-        });
-
-        await new Promise(r => setTimeout(r, 500));
-        continue;
-      }
+      // NO FALLBACK - just throw the error
+      console.error(`❌ Model ${selected.model.id} failed: ${msg}`);
+      throw error;
     }
   }
 
-  private generateSmartFeedback(content: string, iteration: number): string {
-    const marker = '[TASK_DONE]';
-    const trimmed = content.trim();
-    
-    if (trimmed.endsWith('...') || /\w\s*$/.test(trimmed)) {
-      return `You stopped mid-sentence. Continue from where you left off. Add ${marker} when finished.`;
-    }
-
-    const openBraces = (trimmed.match(/\{/g) || []).length;
-    const closeBraces = (trimmed.match(/\}/g) || []).length;
-    if (openBraces > closeBraces) {
-      return `Your code has unclosed braces. Complete your code block and add ${marker}.`;
-    }
-
-    const openParens = (trimmed.match(/\(/g) || []).length;
-    const closeParens = (trimmed.match(/\)/g) || []).length;
-    if (openParens > closeParens) {
-      return `Your code has unclosed parentheses. Complete your code and add ${marker}.`;
-    }
-
-    if (/<[a-zA-Z][^>]*$/.test(trimmed)) {
-      return `Your HTML/XML is incomplete. Close your tags and add ${marker}.`;
-    }
-
-    if (/```[a-z]*$/im.test(trimmed) && !/```[\s\S]*```/m.test(trimmed)) {
-      return `Your code block is incomplete. Finish your code, close with \`\`\`, and add ${marker}.`;
-    }
-
-    if (iteration <= 3) {
-      return `Continue your work. When complete, add ${marker} at the end.`;
-    }
-
-    return `Iteration ${iteration}. Please finish and add ${marker}.`;
-  }
-
-/**
-* Base streaming execution without verification
-* Includes automatic model switching on errors with partial content preservation
-*/
-  private async executeStreamingBase(
+  async executeStreaming(
     request: ChatCompletionRequest,
     onChunk: (chunk: ChatCompletionChunk) => void,
     onComplete?: () => void,
@@ -650,6 +351,77 @@ async executeStreaming(
       throw new Error('No streaming-capable models available');
     }
 
+    // If specific model requested, use it directly
+    if (request.model) {
+      const modelConfig = this.allModels.find(m => m.id === request.model);
+      if (modelConfig && modelConfig.supportsStreaming) {
+        const provider = this.providers.get(modelConfig.provider);
+        if (provider) {
+          console.log(`\n🎯 Direct streaming for model: ${request.model}`);
+
+          const KAWAII_FACES = [
+            '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+            '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+          ];
+          const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+          const displayPath = `[${modelConfig.provider}] ${request.model}`;
+          const statusMsg = `\n${randomFace} ${displayPath}\n\n`;
+
+          console.log(`[STREAM] Starting ${displayPath}`);
+
+          onChunk({
+            id: `status-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: request.model,
+            choices: [{
+              index: 0,
+              delta: { content: statusMsg },
+              finish_reason: null
+            }]
+          });
+
+          const startTime = performance.now();
+          try {
+            await provider.executeStreaming(
+              request,
+              onChunk,
+              () => {
+                const latency = Math.round(performance.now() - startTime);
+                healthTracker.recordRequest(request.model!, modelConfig.provider, {
+                  latency,
+                  statusCode: '200',
+                  success: true,
+                });
+                this.updateRankingsFromRealLatency();
+                onComplete?.();
+              },
+              (error) => {
+                const latency = Math.round(performance.now() - startTime);
+                const msg = error.message;
+                let statusCode = 'ERR';
+                if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+                else if (msg.includes('429')) { statusCode = '429'; }
+                else if (msg.includes('404')) { statusCode = '404'; }
+                else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; }
+                healthTracker.recordRequest(request.model!, modelConfig.provider, { latency, statusCode, success: false });
+
+                // NO FALLBACK - just report error
+                console.error(`❌ Streaming failed for ${request.model}: ${msg}`);
+                onError?.(error);
+              }
+            );
+            return;
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            console.error(`❌ Streaming error for ${request.model}: ${msg}`);
+            throw error;
+          }
+        }
+      }
+    }
+
+    // Auto mode - select best model
     const selectionResult = smartModelSelector.selectForMode(
       mode || 'best',
       streamingModels
@@ -659,475 +431,64 @@ async executeStreaming(
       throw new Error('No streaming model available');
     }
 
-    // Note: conversationHasTools will be defined later in the code
-    // We'll determine conversation type after it's declared
-    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
-    const triedModels: Set<string> = new Set();
-    let accumulatedContent = '';
-    let accumulatedContentClean = ''; // Clean content without status/switch messages
-    let lastModelName = '';
-    let isFirstModel = true;
-    let fatalError: Error | null = null; // Track fatal tool errors to throw after loop
-
-  const KAWAII_FACES = [
-    '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
-    '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-  ];
-
-  // Patterns to filter out from content accumulation
-  const STATUS_PATTERNS = [
-    /\(｡•́︿•̀｡\)/, /\(◔_◔\)/, /\(¬‿¬\)/, /\(•_•\)/, /\(・_・；\)/,
-    /\(￣ω￣\)/, /\(⌐■_■\)/, /\(◕‿◕\)/, /\(｡◕‿◕｡\)/, /\(✿◠‿◠\)/,
-    /\[nvidia-nim\]/, /\[openrouter\]/, /\[groq\]/,
-    /Fallback:/,
-    /⚠️/, /🔄/, /📝/,
-    /Switching to/, /Model:/, /Preserving/,
-  ];
-
-const isStatusMessage = (content: string): boolean => {
-    return STATUS_PATTERNS.some(pattern => pattern.test(content));
-  };
-
-  const hasToolMessages = (messages: any[]): boolean => {
-    return messages.some(m => m.role === 'tool' || (m.role === 'assistant' && m.tool_calls?.length > 0));
-  };
-
-  const conversationHasTools = hasToolMessages(request.messages);
-  let toolRetryCount = 0; // Track retries for tool conversations
-  const maxToolRetries = 3;
-
-  const isContentTruncated = (content: string, modelName: string): boolean => {
-    if (!content || content.length < 100) return false;
-    const trimmed = content.trim();
-
-    // Check for unclosed code blocks (strongest signal)
-    const codeBlockMatches = trimmed.match(/```/g) || [];
-    const unclosedCodeBlocks = codeBlockMatches.length % 2 !== 0;
-    if (unclosedCodeBlocks) {
-      console.log(`[TRUNCATE] Unclosed code block detected for ${modelName}`);
-      return true;
+    const selected = selectionResult.model;
+    const provider = this.providers.get(selected.model.provider);
+    if (!provider) {
+      throw new Error(`Provider ${selected.model.provider} not initialized`);
     }
 
-    // Check for unclosed brackets at very end (strong signal)
-    const lastLine = trimmed.split('\n').pop() || '';
-    if (/[{(\[]\s*$/.test(lastLine)) {
-      console.log(`[TRUNCATE] Unclosed bracket at end for ${modelName}`);
-      return true;
-    }
+    const KAWAII_FACES = [
+      '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+      '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+    ];
+    const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+    const displayPath = `[${selected.model.provider}] ${selected.model.id}`;
+    const statusMsg = `\n${randomFace} ${displayPath}\n\n`;
 
-    // Only flag as truncated if there's CLEAR evidence of interruption
-    // 1. Ends mid-word (like "think" instead of "thinking")
-    // 2. AND doesn't end with any punctuation or natural break
-    // 3. AND is substantial content (>800 chars)
-    const endsMidWord = /[a-z]$/.test(trimmed) && !/[.!?。！？\n]\s*$/.test(trimmed);
-    const hasNaturalEnd = /[.!?。！？]\s*$/.test(trimmed) || /\n\s*$/.test(trimmed);
-    
-    if (endsMidWord && !hasNaturalEnd && trimmed.length > 800) {
-      console.log(`[TRUNCATE] Possible mid-word truncation for ${modelName}`);
-      return true;
-    }
+    console.log(`[STREAM] Starting ${displayPath}`);
 
-    return false;
-  };
-
-for (const rankedModel of fallbackChain) {
-  if (triedModels.has(rankedModel.model.id)) continue;
-  triedModels.add(rankedModel.model.id);
-
-  const provider = this.providers.get(rankedModel.model.provider);
-  if (!provider) continue;
-
-  const streamStartTime = performance.now();
-  let streamSuccess = false;
-  let chunkCount = 0;
-  let modelPartialContent = '';
-  let modelPartialContentClean = ''; // Clean content for this model only
-
-  const fullModelPath = rankedModel.model.id;
-  const providerName = rankedModel.model.provider;
-  const modelChanged = lastModelName && lastModelName !== fullModelPath;
-
-  // Save checkpoint before starting (from autonomous-agent-patterns)
-  let checkpointId: string | null = null;
-  if (conversationHasTools && isFirstModel) {
-    checkpointId = conversationStateManager.saveCheckpoint(
-      `session-${Date.now()}`,
-      {
-        modelId: fullModelPath,
-        messages: request.messages,
-        toolCalls: request.messages
-          .filter((m: any) => m.role === 'assistant' && m.tool_calls)
-          .flatMap((m: any) => m.tool_calls),
-        partialContent: '',
-        metadata: {
-          provider: providerName,
-          latency: 0,
-          chunkCount: 0
-        }
-      }
-    );
-    console.log(`[CHECKPOINT] Saved checkpoint ${checkpointId} for tool conversation`);
-  }
-
-    if (isFirstModel || modelChanged) {
-      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-      const displayPath = `[${providerName}] ${fullModelPath}`;
-      const statusMsg = isFirstModel
-        ? `\n${randomFace} ${displayPath}\n\n`
-        : `\n${randomFace} Fallback: ${displayPath}\n\n`;
-
-      // Send status as a special metadata chunk, not as content
-      // This prevents status messages from accumulating in content
-      console.log(`[STREAM] ${isFirstModel ? 'Starting' : 'Switching to'} ${displayPath}`);
-
-      // Still send the status message for user visibility, but mark it clearly
-      onChunk({
-        id: `status-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: fullModelPath,
-        choices: [{
-          index: 0,
-          delta: { content: statusMsg },
-          finish_reason: null
-        }]
-      });
-    }
-
-    lastModelName = fullModelPath;
-    isFirstModel = false;
-
-  // Build request - only inject clean accumulated content, not status messages
-  let modelRequest = { ...request, model: rankedModel.model.id };
-  if (accumulatedContentClean.length > 0) {
-    // Use context compression from agent-orchestration patterns
-    const compressedContent = smartModelSelector.compressContext(accumulatedContentClean, 1000);
-    
-    const continuationPrompt = `[Previous model stopped. Continue from where it stopped. Last output (compressed):\n---\n${compressedContent}\n---\nContinue exactly from where it stopped, maintaining the same format and style. Do NOT repeat the content above.]`;
-    
-    modelRequest = {
-      ...modelRequest,
-      messages: [
-        ...request.messages,
-        { role: 'assistant', content: accumulatedContentClean },
-        { role: 'user', content: continuationPrompt }
-      ]
-    };
-  }
-
-    try {
-      await provider.executeStreaming(
-        modelRequest,
-        (chunk) => {
-          chunkCount++;
-          const content = chunk.choices[0]?.delta?.content;
-          if (typeof content === 'string') {
-            modelPartialContent += content;
-            accumulatedContent += content;
-            
-            // Only accumulate clean content (filter out status messages)
-            if (!isStatusMessage(content)) {
-              modelPartialContentClean += content;
-              accumulatedContentClean += content;
-            }
-          }
-          onChunk(chunk);
-        },
-	() => {
-		const latency = Math.round(performance.now() - streamStartTime);
-		const hasContent = modelPartialContent.trim().length > 0;
-		const isTruncated = isContentTruncated(modelPartialContent, rankedModel.model.name);
-
-  if (isTruncated) {
-    console.warn(`⚠️ ${rankedModel.model.name} returned truncated content - triggering fallback`);
-    streamSuccess = false;
-    healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-      latency,
-      statusCode: '200',
-      success: false,
-    });
-    circuitBreaker.recordModelFailure(rankedModel.model.id, 'Truncated content detected');
-    return;
-  }
-
-  streamSuccess = true;
-  if (!hasContent) {
-    console.warn(`⚠️ ${rankedModel.model.name} streaming returned empty content`);
-  }
-  healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-    latency,
-    statusCode: '200',
-    success: hasContent,
-  });
-  this.updateRankingsFromRealLatency();
-  
-  // Record success for adaptive scoring (from multi-agent-patterns)
-  adaptiveModelScorer.recordSuccess(fullModelPath, latency, {
-    hadToolCalls: conversationHasTools,
-    contextWindowUsed: modelPartialContent.length / 4 // Rough token estimate
-  });
-  
-  if (hasContent) {
-    circuitBreaker.recordModelSuccess(fullModelPath);
-  } else {
-    circuitBreaker.recordModelFailure(fullModelPath, 'Empty content in streaming');
-  }
-  
-  // Clear checkpoint on success
-  if (checkpointId) {
-    conversationStateManager.deleteCheckpoint(checkpointId);
-    console.log(`[CHECKPOINT] Cleared checkpoint ${checkpointId} on success`);
-  }
-  
-  onComplete?.();
-	},
-        (error) => {
-          const latency = Math.round(performance.now() - streamStartTime);
-          streamSuccess = false;
-          let statusCode = 'ERR';
-          const msg = error.message;
-          if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
-          else if (msg.includes('429')) { statusCode = '429'; }
-          else if (msg.includes('404')) { statusCode = '404'; }
-          else if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('Stream timeout')) { statusCode = '000'; }
-      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
-      circuitBreaker.recordModelFailure(rankedModel.model.id, msg);
-      
-      // Record failure for adaptive scoring
-      adaptiveModelScorer.recordFailure(fullModelPath, msg, {
-        hadToolCalls: conversationHasTools
-      });
-
-      const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-      if (nextModel && !conversationHasTools) {
-        const switchMsg = `\n\n⚠️ [${providerName}] ${fullModelPath} encountered an error. Switching to ${nextModel.model.id}...\n` +
-          (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
-          `🔄 Continuing...\n\n`;
-
-        console.log(`[MODEL-SWITCH] ${fullModelPath} → ${nextModel.model.id} (preserved ${modelPartialContentClean.length} clean chars)`);
-
-        onChunk({
-          id: `switch-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: fullModelPath,
-          choices: [{
-            index: 0,
-            delta: { content: switchMsg },
-            finish_reason: null
-          }]
-        });
-      } else if (conversationHasTools) {
-        // Retry logic for tool conversations (from multi-agent-patterns)
-        if (toolRetryCount < maxToolRetries) {
-          toolRetryCount++;
-          const retryDelay = Math.min(1000 * Math.pow(2, toolRetryCount), 10000);
-          
-          console.log(`[TOOL-RETRY] Retrying ${fullModelPath} in ${retryDelay}ms (attempt ${toolRetryCount}/${maxToolRetries})`);
-          
-          onChunk({
-            id: `tool-retry-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: fullModelPath,
-            choices: [{
-              index: 0,
-              delta: { 
-                content: `\n\n⚠️ Tool conversation error: ${msg}\n` +
-                  `🔄 Retrying with same model (attempt ${toolRetryCount}/${maxToolRetries})...\n\n`
-              },
-              finish_reason: null
-            }]
-          });
-          
-          // Note: The retry will happen automatically in the next iteration
-          // of the fallback chain loop because we're not marking streamSuccess = true
-        } else {
-          console.error(`[TOOL-ERROR] Max retries (${maxToolRetries}) reached for tool conversation. Error: ${msg}`);
-          onChunk({
-            id: `tool-error-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: fullModelPath,
-            choices: [{
-              index: 0,
-              delta: { 
-                content: `\n\n❌ Tool conversation error after ${maxToolRetries} retries: ${msg}\n` +
-                  `Unable to continue. Please retry the conversation manually.\n\n`
-              },
-              finish_reason: 'stop'
-            }]
-          });
-          onError?.(error);
-        }
-      } else if (fallbackChain.indexOf(rankedModel) === fallbackChain.length - 1) {
-        onError?.(error);
-      }
-  }
-      );
-
-      if (streamSuccess) {
-        return;
-      }
-
-      const streamDuration = performance.now() - streamStartTime;
-      if (chunkCount > 0 && !streamSuccess && streamDuration > 5000) {
-        console.log(`[MODEL-SWITCH] ${rankedModel.model.name} stopped unexpectedly after ${chunkCount} chunks`);
-
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-          latency: Math.round(streamDuration),
-          statusCode: 'ERR',
-          success: false,
-        });
-        circuitBreaker.recordFailure(rankedModel.model.provider, 'Stream stopped unexpectedly');
-
-const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-    if (nextModel && !conversationHasTools) {
-      const switchMsg = `\n\n⚠️ Stream from [${providerName}] ${fullModelPath} stopped unexpectedly. Switching to ${nextModel.model.id}...\n` +
-      (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars.\n` : '') +
-      `🔄 Continuing...\n\n`;
-          
-          onChunk({
-            id: `switch-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: fullModelPath,
-            choices: [{
-              index: 0,
-              delta: { content: switchMsg },
-              finish_reason: null
-            }]
-          });
-        }
-		continue;
-      }
-    } catch (error) {
-      const latency = Math.round(performance.now() - streamStartTime);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`Stream error from ${rankedModel.model.name}: ${errorMessage}`);
-
-      let statusCode = 'ERR';
-      if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; }
-      else if (errorMessage.includes('429')) { statusCode = '429'; }
-      else if (errorMessage.includes('404')) { statusCode = '404'; }
-      else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; }
-
-      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success: false });
-      circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
-
-const nextModel = fallbackChain[fallbackChain.indexOf(rankedModel) + 1];
-      if (nextModel && !conversationHasTools) {
-        const switchMsg = `\n\n⚠️ Model [${providerName}] ${fullModelPath} crashed: ${errorMessage.slice(0, 100)}. Switching to ${nextModel.model.id}...\n` +
-        (modelPartialContentClean.length > 0 ? `📝 Preserving ${modelPartialContentClean.length} chars of content.\n` : '') +
-        `🔄 Continuing...\n\n`;
-
-        onChunk({
-          id: `switch-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: fullModelPath,
-          choices: [{
-            index: 0,
-            delta: { content: switchMsg },
-            finish_reason: null
-          }]
-        });
-      } else if (conversationHasTools) {
-        console.error(`[TOOL-ERROR] Cannot switch models during tool conversation. Error: ${errorMessage}`);
-        onChunk({
-          id: `tool-error-${Date.now()}`,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: fullModelPath,
-          choices: [{
-            index: 0,
-            delta: { content: `\n\n❌ Tool conversation error: ${errorMessage}. Cannot switch models during tool calls.\n\n` },
-finish_reason: 'stop'
+    onChunk({
+      id: `status-${Date.now()}`,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: selected.model.id,
+      choices: [{
+        index: 0,
+        delta: { content: statusMsg },
+        finish_reason: null
       }]
-      });
-      if (onError) onError(error instanceof Error ? error : new Error(errorMessage));
-      fatalError = error instanceof Error ? error : new Error(errorMessage);
-      return; // Exit this model attempt, will be thrown after loop
-    }
-    continue;
-  }
-}
+    });
 
-// Re-throw fatal tool error outside the loop
-if (fatalError) {
-  throw fatalError;
-}
-
-throw new Error('All providers failed for streaming request');
-}
-
-  private async executeWithFallback(
-    request: ChatCompletionRequest,
-    fallbackChain: RankedModel[]
-  ): Promise<ChatCompletionResponse> {
-    const errors: string[] = [];
+    // Execute directly - NO FALLBACK, NO SWITCHING
     const startTime = performance.now();
-
-    for (const rankedModel of fallbackChain) {
-      const provider = this.providers.get(rankedModel.model.provider);
-      if (!provider) continue;
-
-try {
-      console.log(`\n⏳ Trying ${rankedModel.model.name}...`);
-const modelStartTime = performance.now();
-      const response = await provider.execute({
-        ...request,
-        model: rankedModel.model.id,
-      });
-      const latency = Math.round(performance.now() - modelStartTime);
-
-      // Check for empty content - content can be string, array, or null
-      // But if tool_calls are present, that's valid too
-      const content = response.choices?.[0]?.message?.content;
-      const toolCalls = response.choices?.[0]?.message?.tool_calls;
-      const contentStr = typeof content === 'string' ? content : Array.isArray(content) ? JSON.stringify(content) : '';
-      const hasEmptyContent = contentStr.trim().length === 0 && (!toolCalls || toolCalls.length === 0);
-
-      if (hasEmptyContent) {
-        console.warn(`⚠️ ${rankedModel.model.name} returned empty content, treating as failure`);
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
+    await provider.executeStreaming(
+      { ...request, model: selected.model.id },
+      onChunk,
+      () => {
+        const latency = Math.round(performance.now() - startTime);
+        healthTracker.recordRequest(selected.model.id, selected.model.provider, {
           latency,
           statusCode: '200',
-          success: false,
+          success: true,
         });
-        circuitBreaker.recordFailure(rankedModel.model.provider, 'Empty content response');
-        errors.push(`${rankedModel.model.name}: Empty content`);
-        continue; // Try next model in fallback chain
-      }
-
-      circuitBreaker.recordSuccess(rankedModel.model.provider);
-      healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, {
-        latency,
-        statusCode: '200',
-        success: true,
-      });
-      this.updateRankingsFromRealLatency();
-      console.log(`✓ Success with ${rankedModel.model.name} (${latency}ms)`);
-      return response;
-    } catch (error) {
+        this.updateRankingsFromRealLatency();
+        onComplete?.();
+      },
+      (error) => {
         const latency = Math.round(performance.now() - startTime);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        errors.push(`${rankedModel.model.name}: ${errorMessage}`);
-        console.error(`✗ ${rankedModel.model.name} failed: ${errorMessage}`);
-
+        const msg = error.message;
         let statusCode = 'ERR';
-        let success = false;
-        if (errorMessage.includes('401') || errorMessage.includes('403')) { statusCode = '401'; success = true; }
-        else if (errorMessage.includes('429')) { statusCode = '429'; success = false; }
-        else if (errorMessage.includes('404')) { statusCode = '404'; success = false; }
-        else if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-        healthTracker.recordRequest(rankedModel.model.id, rankedModel.model.provider, { latency, statusCode, success });
+        if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+        else if (msg.includes('429')) { statusCode = '429'; }
+        else if (msg.includes('404')) { statusCode = '404'; }
+        else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; }
+        healthTracker.recordRequest(selected.model.id, selected.model.provider, { latency, statusCode, success: false });
 
-        circuitBreaker.recordFailure(rankedModel.model.provider, errorMessage);
+        // NO FALLBACK - just report error
+        console.error(`❌ Streaming failed for ${selected.model.id}: ${msg}`);
+        onError?.(error);
       }
-    }
-
-    throw new Error(`All providers failed:\n${errors.map((e, i) => ` ${i + 1}. ${e}`).join('\n')}`);
+    );
   }
 
   getAvailableModels(): ModelConfig[] {
@@ -1159,8 +520,8 @@ const modelStartTime = performance.now();
     return this.config;
   }
 
-  updateConfig(config: Partial<ProxyConfig>): void {
-    this.config = { ...this.config, ...config };
+  updateConfig(updates: Partial<ProxyConfig>): void {
+    this.config = { ...this.config, ...updates };
     this.initialize();
   }
 
