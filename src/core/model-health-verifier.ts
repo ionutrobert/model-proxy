@@ -70,10 +70,11 @@ export class ModelHealthVerifier {
     modelId: string,
     providerConfig?: { baseUrl: string; apiKey: string }
   ): Promise<VerificationResult> {
+    // Provider baseUrl already includes /v1, so just append /chat/completions
     const url = providerConfig
-      ? `${providerConfig.baseUrl}/v1/chat/completions`
+      ? `${providerConfig.baseUrl}/chat/completions`
       : this.baseUrl
-        ? `${this.baseUrl}/v1/chat/completions`
+        ? `${this.baseUrl}/chat/completions`
         : null;
 
     const apiKey = providerConfig?.apiKey ?? this.apiKey;
