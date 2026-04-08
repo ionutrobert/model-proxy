@@ -751,28 +751,30 @@ export function createEmbeddingsRoutes(proxy: ModelProxyCore) {
 export function createCompletionsRoutes(proxy: ModelProxyCore) {
   const router = Router();
 
-  const completionRequestSchema = z.object({
-    model: z.string(),
-    prompt: z.union([
-      z.string(),
-      z.array(z.string()),
-      z.array(z.number()),
-      z.array(z.array(z.number())),
-    ]),
-    max_tokens: z.number().positive().optional(),
-    temperature: z.number().min(0).max(2).optional().default(1),
-    top_p: z.number().min(0).max(1).optional().default(1),
-    n: z.number().positive().optional().default(1),
-    stream: z.boolean().optional().default(false),
-    logprobs: z.number().min(0).max(5).optional(),
-    echo: z.boolean().optional().default(false),
-    stop: z.union([z.string(), z.array(z.string())]).optional(),
-    presence_penalty: z.number().min(-2).max(2).optional().default(0),
-    frequency_penalty: z.number().min(-2).max(2).optional().default(0),
-    best_of: z.number().positive().optional(),
-    logit_bias: z.record(z.number()).optional(),
-    user: z.string().optional(),
-  });
+   const completionRequestSchema = z.object({
+     model: z.string(),
+     prompt: z.union([
+       z.string(),
+       z.array(z.string()),
+       z.array(z.number()),
+       z.array(z.array(z.number())),
+     ]),
+     max_tokens: z.number().positive().optional(),
+     temperature: z.number().min(0).max(2).optional().default(1),
+     top_p: z.number().min(0).max(1).optional().default(1),
+     n: z.number().positive().optional().default(1),
+     stream: z.boolean().optional().default(false),
+     logprobs: z.number().min(0).max(5).optional(),
+     echo: z.boolean().optional().default(false),
+     stop: z.union([z.string(), z.array(z.string())]).optional(),
+     presence_penalty: z.number().min(-2).max(2).optional().default(0),
+     frequency_penalty: z.number().min(-2).max(2).optional().default(0),
+     best_of: z.number().positive().optional(),
+     logit_bias: z.record(z.number()).optional(),
+     user: z.string().optional(),
+     suffix: z.string().optional(),
+     seed: z.number().optional(),
+   });
 
   router.post('/', async (req: Request, res: Response): Promise<void> => {
     try {
@@ -832,22 +834,25 @@ export function createCompletionsRoutes(proxy: ModelProxyCore) {
             'Authorization': `Bearer ${apiKey}`,
             ...provider.headers,
           },
-          body: JSON.stringify({
-            model: request.model,
-            prompt: request.prompt,
-            max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            top_p: request.top_p,
-            n: request.n,
-            stream: true,
-            logprobs: request.logprobs,
-            echo: request.echo,
-            stop: request.stop,
-            presence_penalty: request.presence_penalty,
-            frequency_penalty: request.frequency_penalty,
-            logit_bias: request.logit_bias,
-            user: request.user,
-          }),
+           body: JSON.stringify({
+             model: request.model,
+             prompt: request.prompt,
+             max_tokens: request.max_tokens,
+             temperature: request.temperature,
+             top_p: request.top_p,
+             n: request.n,
+             stream: true,
+             logprobs: request.logprobs,
+             echo: request.echo,
+             stop: request.stop,
+             presence_penalty: request.presence_penalty,
+             frequency_penalty: request.frequency_penalty,
+             best_of: request.best_of,
+             logit_bias: request.logit_bias,
+             user: request.user,
+             suffix: request.suffix,
+             seed: request.seed,
+           }),
         });
 
         if (!response.ok) {
@@ -888,31 +893,33 @@ export function createCompletionsRoutes(proxy: ModelProxyCore) {
           res.end();
         }
       } else {
-        const response = await fetch(`${baseUrl}/v1/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            ...provider.headers,
-          },
-          body: JSON.stringify({
-            model: request.model,
-            prompt: request.prompt,
-            max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            top_p: request.top_p,
-            n: request.n,
-            stream: false,
-            logprobs: request.logprobs,
-            echo: request.echo,
-            stop: request.stop,
-            presence_penalty: request.presence_penalty,
-            frequency_penalty: request.frequency_penalty,
-            best_of: request.best_of,
-            logit_bias: request.logit_bias,
-            user: request.user,
-          }),
-        });
+      const response = await fetch(`${baseUrl}/v1/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          ...provider.headers,
+        },
+        body: JSON.stringify({
+          model: request.model,
+          prompt: request.prompt,
+          max_tokens: request.max_tokens,
+          temperature: request.temperature,
+          top_p: request.top_p,
+          n: request.n,
+          stream: false,
+          logprobs: request.logprobs,
+          echo: request.echo,
+          stop: request.stop,
+          presence_penalty: request.presence_penalty,
+          frequency_penalty: request.frequency_penalty,
+          best_of: request.best_of,
+          logit_bias: request.logit_bias,
+          user: request.user,
+          suffix: request.suffix,
+          seed: request.seed,
+        }),
+      });
 
         if (!response.ok) {
           const error = await response.text();

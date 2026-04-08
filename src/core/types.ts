@@ -412,6 +412,8 @@ export interface CompletionRequest {
   best_of?: number;
   logit_bias?: Record<string, number>;
   user?: string;
+  suffix?: string;
+  seed?: number;
 }
 
 export interface CompletionResponse {
