@@ -432,6 +432,12 @@ async executeStreaming(
     const sanitizedMessages = orchestrator.sanitizeMessages(request.messages);
     const messages = injectVerificationPrompt(sanitizedMessages);
 
+    // Helper to check if conversation has tool messages
+    const hasToolMessages = (msgs: any[]): boolean => {
+      return msgs.some(m => m.role === 'tool' || (m.role === 'assistant' && m.tool_calls?.length > 0));
+    };
+    const conversationHasTools = hasToolMessages(request.messages);
+
     let iteration = 0;
     const completionMarker = '[TASK_DONE]';
     const maxIterations = 5;
@@ -509,24 +515,66 @@ async executeStreaming(
       });
 
       // Add feedback for next iteration using clean content
-      messages.push(
-        { role: 'assistant', content: fullContentClean },
-        { role: 'user', content: feedback }
-      );
+      // BUT: Skip mutation for tool conversations to avoid role mismatch
+      if (!conversationHasTools) {
+        messages.push(
+          { role: 'assistant', content: fullContentClean },
+          { role: 'user', content: feedback }
+        );
+      }
 
       // Delay before next iteration
       await new Promise(r => setTimeout(r, 1000));
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[LOOP] Iteration ${iteration} error:`, errorMsg);
 
-      // If we have partial clean content, save it and retry with different model
-      if (fullContentClean && fullContentClean.length > 10) {
-        messages.push(
-          { role: 'assistant', content: fullContentClean },
-          { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
-        );
+        // For tool conversations, don't try to recover - just fail
+        if (conversationHasTools) {
+          console.error(`[LOOP] Tool conversation error, aborting: ${errorMsg}`);
+          onChunk({
+            id: `loop-error-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: request.model || 'unknown',
+            choices: [{
+              index: 0,
+              delta: {
+                content: `\n\n❌ Tool conversation error: ${errorMsg}\n\n`
+              },
+              finish_reason: 'stop'
+            }]
+          });
+          if (onError) onError(error instanceof Error ? error : new Error(errorMsg));
+          return;
+        }
 
+        // If we have partial clean content, save it and retry with different model
+        if (fullContentClean && fullContentClean.length > 10) {
+          messages.push(
+            { role: 'assistant', content: fullContentClean },
+            { role: 'user', content: `You were interrupted. Continue from where you stopped. Add ${completionMarker} when finished.` }
+          );
+
+          onChunk({
+            id: `loop-error-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: request.model || 'unknown',
+            choices: [{
+              index: 0,
+              delta: {
+                content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
+              },
+              finish_reason: null
+            }]
+          });
+
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+
+        // No partial content - just retry
         onChunk({
           id: `loop-error-${Date.now()}`,
           object: 'chat.completion.chunk',
@@ -535,7 +583,7 @@ async executeStreaming(
           choices: [{
             index: 0,
             delta: {
-              content: `\n\n[Model error detected. Switching model and continuing iteration ${iteration}...]\n\n`
+              content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
             },
             finish_reason: null
           }]
@@ -544,25 +592,6 @@ async executeStreaming(
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
-
-      // No partial content - just retry
-      onChunk({
-        id: `loop-error-${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: request.model || 'unknown',
-        choices: [{
-          index: 0,
-          delta: {
-            content: `\n\n[Model error. Retrying iteration ${iteration} with different model...]\n\n`
-          },
-          finish_reason: null
-        }]
-      });
-
-      await new Promise(r => setTimeout(r, 500));
-      continue;
-    }
     }
   }
 
@@ -605,39 +634,40 @@ async executeStreaming(
 * Base streaming execution without verification
 * Includes automatic model switching on errors with partial content preservation
 */
-private async executeStreamingBase(
-  request: ChatCompletionRequest,
-  onChunk: (chunk: ChatCompletionChunk) => void,
-  onComplete?: () => void,
-  onError?: (error: Error) => void,
-  mode?: SelectionMode
-): Promise<void> {
-  if (this.rankedModels.length === 0) {
-    await this.refreshHealth();
-  }
+  private async executeStreamingBase(
+    request: ChatCompletionRequest,
+    onChunk: (chunk: ChatCompletionChunk) => void,
+    onComplete?: () => void,
+    onError?: (error: Error) => void,
+    mode?: SelectionMode
+  ): Promise<void> {
+    if (this.rankedModels.length === 0) {
+      await this.refreshHealth();
+    }
 
-  const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
-  if (streamingModels.length === 0) {
-    throw new Error('No streaming-capable models available');
-  }
+    const streamingModels = this.rankedModels.filter(r => r.model.supportsStreaming);
+    if (streamingModels.length === 0) {
+      throw new Error('No streaming-capable models available');
+    }
 
-  const selectionResult = smartModelSelector.selectForMode(
-    mode || 'best',
-    streamingModels
-  );
+    const selectionResult = smartModelSelector.selectForMode(
+      mode || 'best',
+      streamingModels
+    );
 
-  if (!selectionResult) {
-    throw new Error('No streaming model available');
-  }
+    if (!selectionResult) {
+      throw new Error('No streaming model available');
+    }
 
-  // Note: conversationHasTools will be defined later in the code
-  // We'll determine conversation type after it's declared
-  const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
-  const triedModels: Set<string> = new Set();
-  let accumulatedContent = '';
-  let accumulatedContentClean = ''; // Clean content without status/switch messages
-  let lastModelName = '';
-  let isFirstModel = true;
+    // Note: conversationHasTools will be defined later in the code
+    // We'll determine conversation type after it's declared
+    const fallbackChain = smartModelSelector.getFallbackChain(streamingModels, 5);
+    const triedModels: Set<string> = new Set();
+    let accumulatedContent = '';
+    let accumulatedContentClean = ''; // Clean content without status/switch messages
+    let lastModelName = '';
+    let isFirstModel = true;
+    let fatalError: Error | null = null; // Track fatal tool errors to throw after loop
 
   const KAWAII_FACES = [
     '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
@@ -1016,13 +1046,19 @@ finish_reason: 'stop'
       }]
       });
       if (onError) onError(error instanceof Error ? error : new Error(errorMessage));
-      throw error instanceof Error ? error : new Error(errorMessage);
+      fatalError = error instanceof Error ? error : new Error(errorMessage);
+      return; // Exit this model attempt, will be thrown after loop
     }
     continue;
-    }
   }
+}
 
-  throw new Error('All providers failed for streaming request');
+// Re-throw fatal tool error outside the loop
+if (fatalError) {
+  throw fatalError;
+}
+
+throw new Error('All providers failed for streaming request');
 }
 
   private async executeWithFallback(

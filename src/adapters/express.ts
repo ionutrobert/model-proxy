@@ -202,50 +202,80 @@ export function createChatRoutes(proxy: ModelProxyCore) {
 
     console.log(`[REQUEST] Model requested: ${modelId}, Auto selection: ${useAutoSelection}`);
 
-      // Handle streaming
-      if (request.stream) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Accel-Buffering', 'no');
+    // Handle streaming
+    if (request.stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
 
+      // Track stream state to prevent writes after end
+      let streamClosed = false;
+
+      const safeWrite = (data: string): boolean => {
+        if (streamClosed || res.writableEnded) {
+          return false;
+        }
         try {
-          await proxy.executeStreaming(
-            request,
-            (chunk) => {
-              const data = JSON.stringify(chunk);
-              res.write(`data: ${data}\n\n`);
-            },
-            () => {
-              res.write('data: [DONE]\n\n');
-              res.end();
-            },
-            (error) => {
-              const errorData = JSON.stringify({
-                error: {
-                  message: error.message,
-                  type: 'server_error',
-                  code: 'stream_error',
-                },
-              });
-              res.write(`data: ${errorData}\n\n`);
-              res.end();
-            },
-            mode
-          );
-	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Streaming failed';
-		res.write(`data: ${JSON.stringify({
-			error: {
-				message,
-				type: 'server_error',
-				code: 'no_model_available'
-			}
-		})}\n\n`);
-		res.end();
-	}
-        return;
+          return res.write(data);
+        } catch (err) {
+          console.error('[STREAM] Write failed:', err);
+          streamClosed = true;
+          return false;
+        }
+      };
+
+      const safeEnd = (): void => {
+        if (streamClosed || res.writableEnded) {
+          return;
+        }
+        streamClosed = true;
+        try {
+          res.end();
+        } catch (err) {
+          console.error('[STREAM] End failed:', err);
+        }
+      };
+
+      try {
+        await proxy.executeStreaming(
+          request,
+          (chunk) => {
+            const data = JSON.stringify(chunk);
+            safeWrite(`data: ${data}\n\n`);
+          },
+          () => {
+            safeWrite('data: [DONE]\n\n');
+            safeEnd();
+          },
+          (error) => {
+            const errorData = JSON.stringify({
+              error: {
+                message: error.message,
+                type: 'server_error',
+                code: 'stream_error',
+              },
+            });
+            safeWrite(`data: ${errorData}\n\n`);
+            safeEnd();
+          },
+          mode
+        );
+      } catch (error) {
+        if (!streamClosed) {
+          const message = error instanceof Error ? error.message : 'Streaming failed';
+          safeWrite(`data: ${JSON.stringify({
+            error: {
+              message,
+              type: 'server_error',
+              code: 'no_model_available'
+            }
+          })}\n\n`);
+          safeEnd();
+        }
       }
+      return;
+    }
 
     // Non-streaming request
     const response = await proxy.execute(request, { mode, useAutoSelection });
