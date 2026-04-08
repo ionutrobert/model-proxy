@@ -234,44 +234,42 @@ export class ModelProxyCore {
 
       const modelConfig = this.allModels.find(m => m.id === modelId);
 
-      // If model not found, fall back to auto selection instead of erroring
+      // If model not found, throw error (NO FALLBACK)
       if (!modelConfig) {
-        console.warn(`⚠️ Model ${modelId} not found, falling back to auto selection`);
-        // Fall through to auto selection logic below
-      } else {
-        const provider = this.providers.get(modelConfig.provider);
-        if (!provider) {
-          console.warn(`⚠️ Provider ${modelConfig.provider} not initialized, falling back to auto selection`);
-          // Fall through to auto selection logic below
-        } else {
-          const startTime = performance.now();
-          try {
-            const response = await provider.execute({ ...request, model: modelId });
-            const latency = Math.round(performance.now() - startTime);
+        throw new Error(`Model ${modelId} not found. Available models: ${this.allModels.map(m => m.id).join(', ')}`);
+      }
 
-            healthTracker.recordRequest(modelId, modelConfig.provider, {
-              latency,
-              statusCode: '200',
-              success: true,
-            });
-            this.updateRankingsFromRealLatency();
-            return response;
-          } catch (error) {
-            const latency = Math.round(performance.now() - startTime);
-            const msg = error instanceof Error ? error.message : String(error);
-            let statusCode = 'ERR';
-            let success = false;
-            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
-            else if (msg.includes('429')) { statusCode = '429'; success = false; }
-            else if (msg.includes('404')) { statusCode = '404'; success = false; }
-            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
-            healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
+      const provider = this.providers.get(modelConfig.provider);
+      if (!provider) {
+        throw new Error(`Provider ${modelConfig.provider} not initialized`);
+      }
 
-            // NO FALLBACK - just throw the error
-            console.error(`❌ Model ${modelId} failed: ${msg}`);
-            throw error;
-          }
-        }
+      const startTime = performance.now();
+      try {
+        const response = await provider.execute({ ...request, model: modelId });
+        const latency = Math.round(performance.now() - startTime);
+
+        healthTracker.recordRequest(modelId, modelConfig.provider, {
+          latency,
+          statusCode: '200',
+          success: true,
+        });
+        this.updateRankingsFromRealLatency();
+        return response;
+      } catch (error) {
+        const latency = Math.round(performance.now() - startTime);
+        const msg = error instanceof Error ? error.message : String(error);
+        let statusCode = 'ERR';
+        let success = false;
+        if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; success = true; }
+        else if (msg.includes('429')) { statusCode = '429'; success = false; }
+        else if (msg.includes('404')) { statusCode = '404'; success = false; }
+        else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; success = false; }
+        healthTracker.recordRequest(modelId, modelConfig.provider, { latency, statusCode, success });
+
+        // NO FALLBACK - just throw the error
+        console.error(`❌ Model ${modelId} failed: ${msg}`);
+        throw error;
       }
     }
 
@@ -354,70 +352,77 @@ export class ModelProxyCore {
     // If specific model requested, use it directly
     if (request.model) {
       const modelConfig = this.allModels.find(m => m.id === request.model);
-      if (modelConfig && modelConfig.supportsStreaming) {
-        const provider = this.providers.get(modelConfig.provider);
-        if (provider) {
-          console.log(`\n🎯 Direct streaming for model: ${request.model}`);
+      if (!modelConfig) {
+        throw new Error(`Model ${request.model} not found. Available models: ${this.allModels.map(m => m.id).join(', ')}`);
+      }
+      if (!modelConfig.supportsStreaming) {
+        throw new Error(`Model ${request.model} does not support streaming`);
+      }
 
-          const KAWAII_FACES = [
-            '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
-            '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
-          ];
-          const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
-          const displayPath = `[${modelConfig.provider}] ${request.model}`;
-          const statusMsg = `\n${randomFace} ${displayPath}\n\n`;
+      const provider = this.providers.get(modelConfig.provider);
+      if (!provider) {
+        throw new Error(`Provider ${modelConfig.provider} not initialized`);
+      }
 
-          console.log(`[STREAM] Starting ${displayPath}`);
+      console.log(`\n🎯 Direct streaming for model: ${request.model}`);
 
-          onChunk({
-            id: `status-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: request.model,
-            choices: [{
-              index: 0,
-              delta: { content: statusMsg },
-              finish_reason: null
-            }]
-          });
+      const KAWAII_FACES = [
+        '(｡•́︿•̀｡)', '(◔_◔)', '(¬‿¬)', '(•_•)', '(・_・；)',
+        '(￣ω￣)', '(⌐■_■)', '(◕‿◕)', '(｡◕‿◕｡)', '(✿◠‿◠)'
+      ];
+      const randomFace = KAWAII_FACES[Math.floor(Math.random() * KAWAII_FACES.length)];
+      const displayPath = `[${modelConfig.provider}] ${request.model}`;
+      const statusMsg = `\n${randomFace} ${displayPath}\n\n`;
 
-          const startTime = performance.now();
-          try {
-            await provider.executeStreaming(
-              request,
-              onChunk,
-              () => {
-                const latency = Math.round(performance.now() - startTime);
-                healthTracker.recordRequest(request.model!, modelConfig.provider, {
-                  latency,
-                  statusCode: '200',
-                  success: true,
-                });
-                this.updateRankingsFromRealLatency();
-                onComplete?.();
-              },
-              (error) => {
-                const latency = Math.round(performance.now() - startTime);
-                const msg = error.message;
-                let statusCode = 'ERR';
-                if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
-                else if (msg.includes('429')) { statusCode = '429'; }
-                else if (msg.includes('404')) { statusCode = '404'; }
-                else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; }
-                healthTracker.recordRequest(request.model!, modelConfig.provider, { latency, statusCode, success: false });
+      console.log(`[STREAM] Starting ${displayPath}`);
 
-                // NO FALLBACK - just report error
-                console.error(`❌ Streaming failed for ${request.model}: ${msg}`);
-                onError?.(error);
-              }
-            );
-            return;
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            console.error(`❌ Streaming error for ${request.model}: ${msg}`);
-            throw error;
+      onChunk({
+        id: `status-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{
+          index: 0,
+          delta: { content: statusMsg },
+          finish_reason: null
+        }]
+      });
+
+      const startTime = performance.now();
+      try {
+        await provider.executeStreaming(
+          request,
+          onChunk,
+          () => {
+            const latency = Math.round(performance.now() - startTime);
+            healthTracker.recordRequest(request.model!, modelConfig.provider, {
+              latency,
+              statusCode: '200',
+              success: true,
+            });
+            this.updateRankingsFromRealLatency();
+            onComplete?.();
+          },
+          (error) => {
+            const latency = Math.round(performance.now() - startTime);
+            const msg = error.message;
+            let statusCode = 'ERR';
+            if (msg.includes('401') || msg.includes('403')) { statusCode = '401'; }
+            else if (msg.includes('429')) { statusCode = '429'; }
+            else if (msg.includes('404')) { statusCode = '404'; }
+            else if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) { statusCode = '000'; }
+            healthTracker.recordRequest(request.model!, modelConfig.provider, { latency, statusCode, success: false });
+
+            // NO FALLBACK - just report error
+            console.error(`❌ Streaming failed for ${request.model}: ${msg}`);
+            onError?.(error);
           }
-        }
+        );
+        return;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`❌ Streaming error for ${request.model}: ${msg}`);
+        throw error;
       }
     }
 
