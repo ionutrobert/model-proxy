@@ -7,6 +7,7 @@ import {
 import { circuitBreaker } from './circuit-breaker.js';
 import { modelDiscovery, DiscoveredModel } from './model-discovery.js';
 import { CURATED_MODELS, getCuratedModel, CuratedModel } from './curated-models.js';
+import { KeyPoolManager, type KeyPool } from './key-pool.js';
 
 interface CachedHealth {
   results: HealthCheckResult[];
@@ -239,24 +240,36 @@ private getModelCapabilities(modelId: string): CuratedModel | null {
     return fallbackModels;
   }
 
-  async checkModelHealth(provider: ProviderConfig, model: ModelConfig): Promise<HealthCheckResult> {
-    const startTime = Date.now();
-    const result: HealthCheckResult = {
-      providerId: provider.id,
-      modelId: model.id,
-      status: 'healthy',
-      latency: 0,
-      timestamp: startTime,
-    };
+async checkModelHealth(provider: ProviderConfig, model: ModelConfig): Promise<HealthCheckResult> {
+  const startTime = Date.now();
+  const result: HealthCheckResult = {
+    providerId: provider.id,
+    modelId: model.id,
+    status: 'healthy',
+    latency: 0,
+    timestamp: startTime,
+  };
 
-    try {
-      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${provider.apiKey}`,
-          ...provider.headers,
-        },
+  try {
+    // Use the LAST key in the pool for health checks (reserve first keys for user requests)
+    const pool = provider.keyPool;
+    let healthCheckKey = provider.apiKey;
+    
+    if (pool && pool.keys.length > 1) {
+      // Use the last key (least likely to be used by active user requests)
+      const lastActiveKey = pool.keys.filter(k => k.status === 'active').pop();
+      if (lastActiveKey) {
+        healthCheckKey = lastActiveKey.key;
+      }
+    }
+
+    const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${healthCheckKey}`,
+        ...provider.headers,
+      },
         body: JSON.stringify({
           model: model.id,
           messages: [{ role: 'user', content: 'hi' }],
