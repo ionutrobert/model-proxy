@@ -138,10 +138,11 @@ async function initializeProxy(): Promise<ModelProxyCore> {
 // ============================================================================
 
 function setupBackgroundPoller(proxy: ModelProxyCore, config: any): void {
-  const pollingEnabled = process.env.BACKGROUND_POLLING_ENABLED !== 'false';
-  
+  const pollingDisabled = process.env.DISABLE_HEALTH_CHECKS === 'true' || process.env.DISABLE_MODEL_VERIFIER === 'true';
+  const pollingEnabled = !pollingDisabled && process.env.BACKGROUND_POLLING_ENABLED !== 'false';
+
   if (!pollingEnabled) {
-    console.log('⏹️ Background polling disabled (set BACKGROUND_POLLING_ENABLED=true to enable)');
+    console.log('⏹️ Background polling disabled');
     return;
   }
 
