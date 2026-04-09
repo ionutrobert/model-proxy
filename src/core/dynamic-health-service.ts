@@ -46,14 +46,14 @@ export class DynamicHealthService {
           const checks = modelsToCheck.map(model => this.checkModelHealth(provider, model));
           const results = await Promise.allSettled(checks);
           
-          for (const result of results) {
-            if (result.status === 'fulfilled') {
-              healthResults.push(result.value);
-              if (result.value.status === 'healthy') {
-                allModels.push(modelsToCheck[results.indexOf(result)]);
-              }
-            }
-          }
+for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'fulfilled') {
+        healthResults.push(result.value);
+      }
+      // Always include model in allModels, regardless of health status
+      allModels.push(modelsToCheck[i]);
+    }
         } else {
           const modelConfigs = this.convertDiscoveredModels(
             discoveryResult.models,
@@ -69,15 +69,15 @@ export class DynamicHealthService {
           const checks = modelsToCheck.map(model => this.checkModelHealth(provider, model));
           const results = await Promise.allSettled(checks);
 
-          for (let i = 0; i < results.length; i++) {
-            const result = results[i];
-            if (result.status === 'fulfilled') {
-              healthResults.push(result.value);
-              if (result.value.status === 'healthy') {
-                allModels.push(modelsToCheck[i]);
-              }
-            }
-          }
+for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'fulfilled') {
+        healthResults.push(result.value);
+      }
+      // Always include model in allModels, regardless of health status
+      // Health status only affects auto-selection, not direct model access
+      allModels.push(modelsToCheck[i]);
+    }
         }
       } catch (error) {
         console.error(`[HEALTH] ${provider.name}: Discovery failed:`, error);
