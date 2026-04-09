@@ -173,18 +173,21 @@ export class ModelProxyCore {
     await this.verifyModels();
   }
 
-  private async verifyModels(): Promise<void> {
-    // Build provider config map
-    const providerConfigs = new Map<string, { baseUrl: string; apiKey: string }>();
-    for (const provider of this.config.providers) {
-      const key = provider.keyPool 
-        ? provider.keyPool.keys[0].key 
-        : provider.apiKey;
-      providerConfigs.set(provider.id, {
-        baseUrl: provider.baseUrl,
-        apiKey: key,
-      });
-    }
+private async verifyModels(): Promise<void> {
+  // Build provider config map - use LAST key for verification (reserve first for user requests)
+  const providerConfigs = new Map<string, { baseUrl: string; apiKey: string }>();
+  for (const provider of this.config.providers) {
+    const activeKeys = provider.keyPool
+      ? provider.keyPool.keys.filter(k => k.status === 'active')
+      : [];
+    const key = activeKeys.length > 0
+      ? activeKeys[activeKeys.length - 1].key // Use LAST active key
+      : provider.apiKey;
+    providerConfigs.set(provider.id, {
+      baseUrl: provider.baseUrl,
+      apiKey: key,
+    });
+  }
 
     const getProviderConfig = (providerId: string) => {
       return providerConfigs.get(providerId) || null;
