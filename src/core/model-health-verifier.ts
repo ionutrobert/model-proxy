@@ -8,7 +8,7 @@ import { healthTracker } from './health-tracker.js';
 
 // Constants from free-coding-models
 const PING_TIMEOUT_MS = 60000; // 60 seconds per request - accommodate thinking models
-const PING_INTERVAL_MS = 30000; // 30 seconds between pings - reduce pressure
+const PING_INTERVAL_MS = 300000; // 5 minutes between pings - reduce API pressure
 const BURST_INTERVAL_MS = 5000; // 5 seconds (burst mode for new models)
 const IDLE_INTERVAL_MS = 60000; // 60 seconds (idle mode for stable models)
 

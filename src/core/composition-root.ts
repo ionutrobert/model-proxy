@@ -58,7 +58,7 @@ export class CompositionRoot {
     return new HealthService(
       {
         endpoint: config.endpoint,
-        intervalMs: config.healthCheckIntervalMs ?? 60000,
+        intervalMs: config.healthCheckIntervalMs ?? 300000, // 5 minutes default
         timeoutMs: config.healthCheckTimeoutMs ?? 10000
       },
       this.eventBus
