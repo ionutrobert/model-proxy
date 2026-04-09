@@ -14,7 +14,7 @@ export interface PollerConfig {
 }
 
 const DEFAULT_CONFIG: PollerConfig = {
-  enabled: true,
+  enabled: process.env.DISABLE_HEALTH_CHECKS !== 'true' && process.env.DISABLE_MODEL_VERIFIER !== 'true',
   intervalMs: 10000,
   timeoutMs: 15000,
   maxConcurrent: 1,
