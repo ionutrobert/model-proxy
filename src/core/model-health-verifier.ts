@@ -12,6 +12,9 @@ const PING_INTERVAL_MS = 300000; // 5 minutes between pings - reduce API pressur
 const BURST_INTERVAL_MS = 5000; // 5 seconds (burst mode for new models)
 const IDLE_INTERVAL_MS = 60000; // 60 seconds (idle mode for stable models)
 
+// Allow disabling verifier via environment variable
+const VERIFIER_DISABLED = process.env.DISABLE_MODEL_VERIFIER === 'true' || process.env.DISABLE_HEALTH_CHECKS === 'true';
+
 // Unhealthy thresholds
 const MAX_CONSECUTIVE_FAILURES = 5; // Increased from 3 - don't mark unhealthy too fast
 const UNHEALTHY_WINDOW_MS = 120000; // Increased from 60s - give models more time
@@ -379,27 +382,33 @@ export class ModelHealthVerifier {
     return { verified, failed };
   }
 
-  startPeriodicVerification(
-    models: ModelConfig[],
-    getProviderConfig: (providerId: ProviderId) => { baseUrl: string; apiKey: string } | null,
-    intervalMs: number = PING_INTERVAL_MS
-  ): void {
-    // Clear existing timers
-    for (const timer of this.intervalTimers.values()) {
-      clearInterval(timer);
-    }
-    this.intervalTimers.clear();
+startPeriodicVerification(
+  models: ModelConfig[],
+  getProviderConfig: (providerId: ProviderId) => { baseUrl: string; apiKey: string } | null,
+  intervalMs: number = PING_INTERVAL_MS
+): void {
+  // Check if verifier is disabled
+  if (VERIFIER_DISABLED) {
+    console.log('[VERIFIER] Model verifier disabled via environment variable');
+    return;
+  }
 
-    // Initial verification
-    this.verifyAllModels(models, getProviderConfig);
+  // Clear existing timers
+  for (const timer of this.intervalTimers.values()) {
+    clearInterval(timer);
+  }
+  this.intervalTimers.clear();
 
-    // Set up periodic verification
-    const timer = setInterval(async () => {
-      await this.verifyAllModels(models, getProviderConfig);
-    }, intervalMs);
+  // Initial verification
+  this.verifyAllModels(models, getProviderConfig);
 
-    this.intervalTimers.set('_global', timer);
-    console.log(`[VERIFIER] Started periodic verification (${intervalMs}ms interval)`);
+  // Set up periodic verification
+  const timer = setInterval(async () => {
+    await this.verifyAllModels(models, getProviderConfig);
+  }, intervalMs);
+
+  this.intervalTimers.set('_global', timer);
+  console.log(`[VERIFIER] Started periodic verification (${intervalMs}ms interval)`);
   }
 
   stopPeriodicVerification(): void {
